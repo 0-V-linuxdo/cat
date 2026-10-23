@@ -1,0 +1,28 @@
+{
+  "name": "arc-sidebar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Arc 风格侧边栏 Chrome 扩展（MV3），一切皆插件，架构仿 Void++",
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "build": "bun run build.ts",
+    "build:dev": "bun run build.ts --dev",
+    "build:selftest": "bun run build.ts --selftest",
+    "lint": "oxlint -c .oxlintrc.json src tests",
+    "tsc": "tsc --noEmit",
+    "test": "bun test",
+    "check": "bun run tsc && bun run lint && bun test && ARC_OUT=dist-check bun run build && ARC_OUT=dist-check bun run scripts/validate-manifest.ts",
+    "smoke": "bun run scripts/smoke-cdp.ts",
+    "load:cdp": "bun run scripts/load-unpacked-cdp.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.10",
+    "@types/chrome": "0.1.4",
+    "oxlint": "1.68.0",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "lottie-web": "^5.13.0"
+  }
+}

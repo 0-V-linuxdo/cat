@@ -1,0 +1,652 @@
+/*
+ * 核心外壳样式 = 共享设计令牌（--arc-*）+ 外壳布局 + 共享组件（TabRow、按钮、输入框、浮层、菜单、设置）。
+ * 各插件组（Tabs / Spaces / Command / Views / Library / Data）的专属样式在 src/plugins/<组>/style.ts，
+ * 通过 managedStyle 注入，随插件启停。插件样式只引用这里的令牌。
+ */
+:root {
+  /* —— 字体 —— */
+  --arc-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --arc-font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --arc-fs: 13px; --arc-fs-sm: 11.5px; --arc-fs-lg: 15px;
+  /* —— 尺寸 / 间距 —— */
+  --arc-row-h: 34px; --arc-pad-x: 10px; --arc-gap: 10px; --arc-indent: 16px;
+  --arc-r-xs: 5px; --arc-r-sm: 7px; --arc-r: 10px; --arc-r-lg: 12px; --arc-r-xl: 16px;
+  --arc-fav-size: 16px;
+  /* —— 动效 —— */
+  --arc-ease: cubic-bezier(.2, .8, .2, 1); --arc-spring: cubic-bezier(.34, 1.4, .64, 1);
+  --arc-t-fast: 120ms; --arc-t: 200ms; --arc-t-slow: 320ms;
+  /* —— 颜色：浅色 —— */
+  --arc-base: #ece9f1; --arc-fg: rgb(20 20 28 / .9); --arc-muted: rgb(20 20 28 / .5); --arc-faint: rgb(20 20 28 / .28);
+  --arc-hover: rgb(255 255 255 / .38); --arc-press: rgb(255 255 255 / .5);
+  --arc-active: rgb(255 255 255 / .82); --arc-active-fg: rgb(10 10 16 / .95);
+  --arc-active-shadow: 0 1px 2px rgb(0 0 0 / .07), 0 0 0 .5px rgb(0 0 0 / .05);
+  --arc-tile: rgb(255 255 255 / .32); --arc-tile-hover: rgb(255 255 255 / .5);
+  --arc-border: rgb(0 0 0 / .07); --arc-divider: rgb(0 0 0 / .08);
+  --arc-pop: rgb(252 252 254 / .92); --arc-pop-solid: #fcfcfe;
+  --arc-pop-shadow: 0 0 0 .5px rgb(0 0 0 / .12), 0 6px 18px -4px rgb(0 0 0 / .14);
+  --arc-accent: var(--arc-space, #6e50e6); --arc-accent-fill: var(--arc-accent); --arc-tint: var(--arc-base);
+  --arc-page: #f5f5f7; --arc-menu: var(--arc-pop); --arc-selected: rgb(0 0 0 / .07); --arc-tint-k: var(--arc-k, 0);
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    /* 暗色默认主题 = Helium 默认（灰阶主题）深色窗框色（用户要求，例外于对齐 Arc）：
+ * 底 #1E2020 = kColorSysHeader（灰阶 dark → kColorRefNeutral12，chromium ui/color/sys_color_mixer.cc:88；Helium 值见 helium-chromium patches/helium/ui/helium-color-scheme.patch:132；
+ *   kColorFrameActive = kColorSysHeader，ui/color/material_ui_color_mixer.cc:82；Helium dark 下 kColorToolbar = kColorFrameActive，helium-color-mixers.patch:25；默认启用灰阶 default-theme.patch）。
+ * 菜单 #242626 = kColorSysBaseContainer（Neutral15，sys_color_mixer.cc:236；patch:133）；文字 #E3E2E2 = Neutral90（OnSurfacePrimary，sys_color_mixer.cc:82；patch:160）；
+ * 次级 #ABABAB = Neutral70（patch:149）；三级 #909191 = Neutral60（patch:148）。 */
+    --arc-base: #1e2020; --arc-page: #1e2020; --arc-menu: #242626;
+    --arc-fg: #e3e2e2; --arc-muted: #ababab; --arc-faint: #909191;
+    --arc-hover: rgb(255 255 255 / .06); --arc-press: rgb(255 255 255 / .09); --arc-selected: rgb(255 255 255 / .10);
+    --arc-active: rgb(255 255 255 / .12); --arc-active-fg: #e3e2e2;
+    --arc-active-shadow: 0 1px 1px rgb(0 0 0 / .4);
+    --arc-tile: rgb(255 255 255 / .06); --arc-tile-hover: rgb(255 255 255 / .10);
+    --arc-border: rgb(255 255 255 / .08); --arc-divider: rgb(255 255 255 / .08);
+    --arc-pop: rgb(36 38 38 / .95); --arc-pop-solid: #242626;
+    --arc-pop-shadow: 0 0 0 .5px rgb(255 255 255 / .08), 0 8px 20px -6px rgb(0 0 0 / .6);
+    --arc-accent: color-mix(in srgb, var(--arc-space, #6e9cf2) 72%, #d0d4dc); --arc-accent-fill: color-mix(in srgb, var(--arc-space, #3d6fd6) 80%, #242626);
+    --arc-tint-k: min(var(--arc-k, 0), 1);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark; /* 强制深色：系统浅色时原生控件 / 滚动条也走深色（dark-mode-title-audit.md） */
+/* 暗色默认主题 = Helium 默认（灰阶主题）深色窗框色（用户要求，例外于对齐 Arc）：
+ * 底 #1E2020 = kColorSysHeader（灰阶 dark → kColorRefNeutral12，chromium ui/color/sys_color_mixer.cc:88；Helium 值见 helium-chromium patches/helium/ui/helium-color-scheme.patch:132；
+ *   kColorFrameActive = kColorSysHeader，ui/color/material_ui_color_mixer.cc:82；Helium dark 下 kColorToolbar = kColorFrameActive，helium-color-mixers.patch:25；默认启用灰阶 default-theme.patch）。
+ * 菜单 #242626 = kColorSysBaseContainer（Neutral15，sys_color_mixer.cc:236；patch:133）；文字 #E3E2E2 = Neutral90（OnSurfacePrimary，sys_color_mixer.cc:82；patch:160）；
+ * 次级 #ABABAB = Neutral70（patch:149）；三级 #909191 = Neutral60（patch:148）。 */
+  --arc-base: #1e2020; --arc-page: #1e2020; --arc-menu: #242626;
+  --arc-fg: #e3e2e2; --arc-muted: #ababab; --arc-faint: #909191;
+  --arc-hover: rgb(255 255 255 / .06); --arc-press: rgb(255 255 255 / .09); --arc-selected: rgb(255 255 255 / .10);
+  --arc-active: rgb(255 255 255 / .12); --arc-active-fg: #e3e2e2;
+  --arc-active-shadow: 0 1px 1px rgb(0 0 0 / .4);
+  --arc-tile: rgb(255 255 255 / .06); --arc-tile-hover: rgb(255 255 255 / .10);
+  --arc-border: rgb(255 255 255 / .08); --arc-divider: rgb(255 255 255 / .08);
+  --arc-pop: rgb(36 38 38 / .95); --arc-pop-solid: #242626;
+  --arc-pop-shadow: 0 0 0 .5px rgb(255 255 255 / .08), 0 8px 20px -6px rgb(0 0 0 / .6);
+  --arc-accent: color-mix(in srgb, var(--arc-space, #6e9cf2) 72%, #d0d4dc); --arc-accent-fill: color-mix(in srgb, var(--arc-space, #3d6fd6) 80%, #242626);
+  --arc-tint-k: min(var(--arc-k, 0), 1);
+}
+
+/* —— 外壳 —— */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+html { background: var(--arc-base); }
+body {
+  font: var(--arc-fs)/1.35 var(--arc-font); letter-spacing: -.005em; color: var(--arc-fg);
+  background: var(--arc-tint); background-attachment: fixed; overflow: hidden; user-select: none;
+  -webkit-font-smoothing: antialiased; transition: background var(--arc-t-slow) var(--arc-ease);
+}
+#app { display: flex; flex-direction: column; height: 100%; padding: 10px 8px 6px; gap: 2px; }
+.arc-scroll { flex: 1; overflow-y: auto; min-height: 0; margin: 0 -8px; padding: 0 8px; scrollbar-width: none; }
+.arc-scroll::-webkit-scrollbar { display: none; }
+.arc-slot:empty { display: none; }
+.arc-slot-header { display: flex; align-items: center; gap: 2px; padding: 4px 0 4px; }
+.arc-slot-header .arc-part { display: inline-flex; vertical-align: middle; }
+.arc-slot-header .arc-part:first-child { flex: 1; min-width: 0; }
+.arc-slot-bottom { display: flex; align-items: center; gap: 2px; padding-top: 6px; min-height: 36px; }
+.arc-slot-bottom .arc-part[data-plugin="Spaces"] { flex: 1; min-width: 0; display: flex; justify-content: center; }
+:focus-visible { outline: 2px solid color-mix(in srgb, var(--arc-accent) 70%, transparent); outline-offset: 1px; }
+
+/* —— 共享原子组件 —— */
+button { font: inherit; color: inherit; }
+.arc-svg { display: block; flex: none; }
+.arc-icon-btn, .arc-caret {
+  border: 0; background: transparent; border-radius: var(--arc-r-sm); height: 28px; min-width: 28px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; color: var(--arc-muted);
+  transition: background var(--arc-t-fast) var(--arc-ease), color var(--arc-t-fast) var(--arc-ease), transform var(--arc-t-fast) var(--arc-ease);
+}
+.arc-icon-btn:hover, .arc-caret:hover { background: var(--arc-hover); color: var(--arc-fg); }
+.arc-icon-btn:active, .arc-caret:active { background: var(--arc-press); transform: scale(.94); }
+.arc-caret { height: 24px; min-width: 24px; padding: 0; opacity: 0; }
+.arc-slot-header:hover .arc-caret, .arc-caret:focus-visible { opacity: 1; }
+.arc-btn {
+  border: 0; background: var(--arc-tile); box-shadow: inset 0 0 0 .5px var(--arc-border); border-radius: var(--arc-r-sm);
+  padding: 5px 11px; cursor: pointer; transition: background var(--arc-t-fast) var(--arc-ease);
+}
+.arc-btn:hover { background: var(--arc-tile-hover); }
+.arc-input {
+  width: 100%; border: 0; background: var(--arc-tile); box-shadow: inset 0 0 0 .5px var(--arc-border); border-radius: var(--arc-r);
+  padding: 8px 11px; outline: none; color: var(--arc-fg); font: inherit; transition: box-shadow var(--arc-t-fast) var(--arc-ease), background var(--arc-t-fast);
+}
+.arc-input::placeholder { color: var(--arc-faint); }
+.arc-input:focus { background: var(--arc-pop-solid); box-shadow: 0 0 0 2px color-mix(in srgb, var(--arc-accent) 55%, transparent); }
+.arc-row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.arc-hint { color: var(--arc-faint); font-size: var(--arc-fs-sm); padding: 8px; text-align: center; }
+.arc-divider { height: 1px; background: var(--arc-divider); margin: 6px var(--arc-pad-x); }
+.arc-badge, .arc-plugin-count { font-size: 11px; font-weight: 400; color: var(--arc-faint); }
+.arc-kbd { border: 0; box-shadow: inset 0 0 0 .5px var(--arc-border), 0 1px 0 var(--arc-border); background: var(--arc-tile); border-radius: var(--arc-r-xs); padding: 2px 7px; font: 11px var(--arc-font-mono); color: var(--arc-muted); cursor: pointer; min-width: 60px; }
+
+/* —— 共享组件：TabRow（src/components/TabRow.ts，Tabs / Spaces / Library 共用） —— */
+.arc-tab, .arc-folder-head {
+  position: relative; display: flex; align-items: center; gap: var(--arc-gap); height: var(--arc-row-h);
+  padding: 0 6px 0 var(--arc-pad-x); border-radius: var(--arc-r); cursor: default; color: var(--arc-fg);
+  transition: background var(--arc-t-fast) var(--arc-ease), box-shadow var(--arc-t-fast) var(--arc-ease), transform var(--arc-t-fast) var(--arc-ease), opacity var(--arc-t) var(--arc-ease);
+}
+.arc-tab + .arc-tab, .arc-tab + .arc-folder, .arc-folder + .arc-tab { margin-top: 1px; }
+.arc-tab:hover, .arc-folder-head:hover { background: var(--arc-hover); }
+.arc-tab:active { transform: scale(.985); }
+.arc-tab.active { background: var(--arc-active); box-shadow: var(--arc-active-shadow); color: var(--arc-active-fg); }
+.arc-tab.active .arc-tab-title { font-weight: 500; }
+.arc-tab.closed .arc-tab-title { color: var(--arc-muted); }
+.arc-tab.closed .arc-fav { opacity: .7; }
+.arc-tab.drop::before { content: ""; position: absolute; left: 8px; right: 8px; top: -1px; height: 2px; border-radius: 2px; background: var(--arc-accent); }
+.arc-fav { width: var(--arc-fav-size); height: var(--arc-fav-size); flex: none; border-radius: 4px; object-fit: contain; display: grid; place-items: center; color: var(--arc-muted); }
+.arc-tab-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent); text-overflow: clip; }
+.arc-audio { font-size: 11px; opacity: .75; }
+.arc-tab-close {
+  position: relative; flex: none; width: 22px; height: 22px; padding: 0; display: grid; place-items: center; border: 0; background: transparent;
+  border-radius: var(--arc-r-sm); color: var(--arc-muted); cursor: pointer; opacity: 0; transform: scale(.85);
+  transition: opacity var(--arc-t-fast) var(--arc-ease), transform var(--arc-t-fast) var(--arc-ease), background var(--arc-t-fast);
+}
+.arc-tab:hover .arc-tab-close, .arc-tab-close:focus-visible { opacity: 1; transform: none; }
+.arc-tab-close:hover { background: var(--arc-press); color: var(--arc-fg); }
+/* 右按钮字形（pinned-hover.md §2.4 SidebarCellButtonCloseContentView）：内容 14×14（.arc-cg），点击区 24（--arc-close-size）；
+ * 横条 14×2、圆角 1（.arc-cb）；“✕” = 两条分别旋转 ±45°（±π/4），“−” = 单条恒等横条；颜色沿用现状（currentColor ⛔）。只给固定 / Today 行（TabRow），其它行仍用 SmallCloseButton。 */
+.arc-tab-close .arc-cg { position: relative; display: block; flex: none; width: 14px; height: 14px; pointer-events: none; }
+.arc-tab-close .arc-cb { position: absolute; left: 0; top: 6px; width: 14px; height: 2px; border-radius: 1px; background: currentColor; }
+.arc-tab-close .arc-cg-x > .arc-cb:nth-child(1) { transform: rotate(45deg); }
+.arc-tab-close .arc-cg-x > .arc-cb:nth-child(2) { transform: rotate(-45deg); }
+/* 归档：点击关闭后行先收起淡出（Arc 的 archive 动画） */
+.arc-tab.archiving { animation: arc-archive var(--arc-t) var(--arc-ease) forwards; pointer-events: none; }
+@keyframes arc-archive { to { opacity: 0; transform: translateX(-12px) scale(.97); height: 0; margin: 0; padding-top: 0; padding-bottom: 0; } }
+
+/* —— 浮层（命令栏 / Library / 设置 共用容器） —— */
+.arc-overlay {
+  position: fixed; inset: 8px; z-index: 10; background: var(--arc-pop); border-radius: var(--arc-r-lg);
+  box-shadow: var(--arc-pop-shadow); display: flex; flex-direction: column;
+  -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6);
+  animation: arc-pop-in var(--arc-t) var(--arc-ease);
+}
+@keyframes arc-pop-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+.arc-overlay-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 10px 8px 14px; font-weight: 600; font-size: var(--arc-fs); }
+.arc-overlay-body { padding: 4px 10px 10px; overflow: auto; flex: 1; }
+.arc-list { display: flex; flex-direction: column; gap: 1px; }
+.arc-list-row { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 10px; border-radius: var(--arc-r-sm); cursor: pointer; transition: background var(--arc-t-fast); }
+.arc-list-row:hover { background: color-mix(in srgb, var(--arc-fg) 6%, transparent); }
+.arc-list-row.sel { background: var(--arc-selected); }
+.arc-list-row small { color: var(--arc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; font-size: var(--arc-fs-sm); }
+.arc-tabs { display: flex; gap: 2px; margin-bottom: 10px; padding: 2px; border-radius: var(--arc-r-sm); background: color-mix(in srgb, var(--arc-fg) 6%, transparent); }
+.arc-tab-btn { flex: 1; border: 0; background: transparent; padding: 4px 10px; border-radius: var(--arc-r-xs); cursor: pointer; color: var(--arc-muted); transition: background var(--arc-t-fast), color var(--arc-t-fast); }
+.arc-tab-btn.active { background: var(--arc-pop-solid); color: var(--arc-fg); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .1); }
+
+/* —— 设置 / 插件列表（_core/pluginSettings） —— */
+.arc-plugin { background: color-mix(in srgb, var(--arc-fg) 3%, transparent); box-shadow: inset 0 0 0 .5px var(--arc-border); border-radius: var(--arc-r); padding: 10px; margin-top: 6px; opacity: .7; transition: opacity var(--arc-t-fast); }
+.arc-plugin.on { opacity: 1; }
+.arc-plugin-head { display: flex; gap: 8px; align-items: center; }
+.arc-plugin-desc { color: var(--arc-muted); font-size: var(--arc-fs-sm); margin-top: 3px; }
+.arc-plugin-settings { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.arc-setting { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12px; }
+.arc-feature-list { margin: 8px 0 2px 18px; display: flex; flex-direction: column; gap: 6px; }
+.arc-feature-head { display: flex; gap: 6px; align-items: baseline; cursor: pointer; }
+.arc-feature-head small { color: var(--arc-muted); font-size: 11px; }
+.arc-feature:not(.on) b { opacity: .55; }
+input[type="checkbox"] { accent-color: var(--arc-accent); }
+
+/* —— 右键菜单 / Toast —— */
+.arc-menu {
+  position: fixed; z-index: 20; min-width: 190px; background: var(--arc-menu); border-radius: var(--arc-r);
+  box-shadow: var(--arc-pop-shadow); padding: 5px; display: flex; flex-direction: column;
+  -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6);
+  animation: arc-menu-in var(--arc-t-fast) var(--arc-ease); transform-origin: top left;
+}
+@keyframes arc-menu-in { from { opacity: 0; transform: scale(.96); } }
+.arc-menu[hidden] { display: none; }
+.arc-menu-item { border: 0; background: transparent; text-align: left; padding: 6px 10px; border-radius: var(--arc-r-xs); cursor: pointer; font-size: var(--arc-fs); }
+.arc-menu-item:hover { background: var(--arc-selected); }
+.arc-toast {
+  /* 位置 = location 3 floatingTopRight（audit-52193-answers.md「Toast 位置定案」B.3：所有 ToastType toast 写死 3，子窗口内 trailing/top 对齐）。
+   * Arc 的子窗口是网页内容区上半部分（B.4）；扩展画不到网页内容区（浏览器限制）→ 侧栏面板右上角。外边距 ⛔（B.6），沿用面板内边距 10 / 8。 */
+  position: fixed; right: 8px; top: 10px; z-index: 30; padding: 6px 12px; border-radius: var(--arc-r-sm);
+  background: var(--arc-menu); color: var(--arc-fg); box-shadow: var(--arc-pop-shadow);
+  font-size: 12px; white-space: nowrap; animation: arc-toast-in var(--arc-t) var(--arc-ease);
+}
+@keyframes arc-toast-in { from { opacity: 0; transform: translate(0, 8px) scale(.96); } }
+
+/* 命令栏弹窗模式 */
+body.arc-popup { background: transparent; }
+body.arc-popup #app { display: none; }
+body.arc-popup .arc-overlay { inset: 0; border-radius: 0; animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}
+
+/* —— 行对齐规范（所有行类型共用）：flex 垂直居中 + 16px 图标盒 + 统一 gap / 左内边距 + 固定行高的文字，
+ *    图标落在同一列、文字落在同一列（由 selftest 的“行对齐”项检查：|图标中心y − 文字中心y| ≤ 1px，图标左 x 一致） —— */
+:root { --arc-icon: 16px; --arc-text-lh: 18px; }
+.arc-tab, .arc-folder-head, .arc-newtab, .arc-space-title, .arc-list-row, .arc-menu-item { display: flex; align-items: center; gap: var(--arc-gap); line-height: var(--arc-text-lh); }
+.arc-tab, .arc-folder-head, .arc-newtab, .arc-space-title { padding-left: var(--arc-pad-x); }
+.arc-list-row, .arc-menu-item { padding-left: var(--arc-pad-x); }
+.arc-fav, .arc-folder-icon, .arc-space-icon, .arc-newtab > .arc-svg, .arc-list-row > .arc-fav {
+  flex: none; width: var(--arc-icon); height: var(--arc-icon); display: grid; place-items: center; line-height: 1; margin: 0;
+}
+img.arc-fav { display: block; object-fit: contain; }
+/* 标签自定义图标（Change Icon）：盒子同 favicon；emoji 字号沿用 .arc-space-icon 的 14，标签行上的图标尺寸 ⛔ 源码未找到 */
+.arc-fav.arc-fav-custom { font-size: 14px; text-align: center; }
+.arc-space-icon { font-size: 14px; text-align: center; }
+.arc-tab-title, .arc-newtab > span, .arc-space-title > span:last-child, .arc-media-title { line-height: var(--arc-text-lh); display: block; }
+.arc-icon-btn > .arc-svg, .arc-caret > .arc-svg, .arc-tab-close > .arc-svg { margin: auto; }
+.arc-icon-btn > span { line-height: var(--arc-text-lh); }
+.arc-slot-bottom { align-items: center; }
+.arc-slot-bottom .arc-part { display: flex; align-items: center; }
+.arc-star { color: var(--arc-faint); margin-left: auto; }
+.arc-star.on { color: var(--arc-muted); }
+.arc-star.on .arc-svg path { fill: currentColor; }
+.arc-badge-new { color: var(--arc-muted); }
+.arc-star { opacity: .7; } .arc-star:hover, .arc-star.on { opacity: 1; }
+.arc-badge-required { color: var(--arc-muted); }
+/* 自绘菜单：分隔线、子菜单、勾选、危险项；自绘下拉框（不用原生 <select>） */
+.arc-menu-sep { height: 1px; margin: 4px 6px; background: var(--arc-divider); }
+.arc-menu-item .arc-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arc-menu-item.has-sub .arc-svg { color: var(--arc-muted); margin-right: -2px; }
+.arc-menu-item.checked .arc-menu-label::after { content: " ✓"; color: var(--arc-muted); }
+.arc-menu-item.danger { color: #e5484d; }
+.arc-submenu { z-index: 21; }
+.arc-dropdown { display: inline-flex; align-items: center; gap: 6px; cursor: default; text-align: left; }
+.arc-dropdown .arc-dropdown-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arc-dropdown .arc-svg { color: var(--arc-muted); flex: none; }
+.arc-dropdown:disabled, .arc-dropdown:disabled .arc-svg { color: var(--arc-disabled-text); cursor: default; } /* 仅改色不降透明度：MenuDisabledText（arc-colors-all.tsv:30/37，menus-spec.md:50） */
+/* 底栏：＋ 固定在最右下角（Arc） */
+.arc-slot-bottom .arc-part[data-plugin="PlusMenu"] { margin-left: auto; }
+/* 固定标签偏离固定网址：标题前的 “/”；点图标重置 */
+/* 偏离斜杠（pinned-drift.md §1）：TabCellSlash 浅 #000 / 深 #FFF α.30；斜杠后间距 4；行悬停 alpha 0 */
+/* 版面（pinned-slash.md ★ 结论 / §3.2；pinned-hover.md §D）。全部用「相对量」：图标槽（Arc SidebarCellImageContainerView）宽 24，16 图标居中，槽左缘 = 图标左缘 − 4；
+ *   槽右缘 → 标题 = 4（customSpacing）+ 2（titleStack 左 inset）= 6 = 行 gap（--arc-gap）→ 非 drift 标题起点 = 图标左缘 + 4 + 16 + 4 + 6 = +26（图标 x 18 → 44，以前 40）。
+ *   drift：槽后间距 0、inset 0、中间插斜杠 4×15、斜杠后 4：斜杠左缘 = 槽右缘（= 图标右缘 + 4），斜杠 → 标题 4，标题起点 = 图标左缘 + 4 + 16 + 4 + 4 + 4 = +28（46）。图标位置不动。
+ * 实现：图标右外边距补上槽右侧的留白（下面 --arc-icon-pad），斜杠的负外边距只抵掉行 gap；hover 只改 alpha（仍占位，Arc 保留间距，无动画） */
+.arc-drift { color: rgb(0 0 0 / .30); width: 4px; height: 15px; margin: 0 calc(4px - var(--arc-gap, 6px)) 0 calc(-1 * var(--arc-gap, 6px)); flex: none; overflow: visible; }
+:root[data-theme="dark"] .arc-drift { color: rgb(255 255 255 / .30); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .arc-drift { color: rgb(255 255 255 / .30); } }
+.arc-tab:hover .arc-drift { opacity: 0; }
+/* 标题列：图标槽右侧留白（Rea：槽 24 − 图标 16，居中 → 右侧 4）。tab 行（固定 / Today / 文件夹内 / Live Folder 子行）、新标签页行：图标 16；文件夹行：图标 17 保持不动，
+ * 标题起点 Rea = 14 + 24 + 6 = 44（outer stack spacing 6，space-header-layout.md 表）→ 相对图标左缘 +26，所以右外边距 = 24 − 4 − 17 = 3。Space 标题行不在这里（设置页负责）。 */
+:root .arc-tab > .arc-fav, :root .arc-newtab > .arc-svg { margin-right: var(--arc-icon-pad, 4px); }
+:root .arc-folder-head > .arc-folder-icon { margin-right: calc(var(--arc-icon-box, 24px) - var(--arc-icon-pad, 4px) - 17px); }
+.arc-fav-btn { cursor: pointer; border-radius: 3px; }
+.arc-fav-btn:hover { outline: 2px solid var(--arc-hover); }
+.arc-rename { height: 28px; padding: 0 8px; flex: 1; min-width: 0; font: inherit; }
+.arc-today.arc-drop-zone { min-height: 28px; }
+.arc-today.drop, .arc-space-dot.drop { background: var(--arc-hover); border-radius: var(--arc-r); }
+button.arc-audio { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; display: inline-flex; border-radius: 4px; }
+button.arc-audio:hover { background: var(--arc-hover); }
+/* P1：文件夹展开动画与头部落点指示 */
+.arc-folder[data-collapsed="false"] > .arc-folder-body { animation: arc-folder-open .16s ease-out; transform-origin: top; }
+@keyframes arc-folder-open { from { opacity: 0; transform: translateY(-4px); } }
+.arc-folder-head[data-drop="before"] { box-shadow: inset 0 2px 0 var(--arc-accent, currentColor); }
+.arc-folder-head[data-drop="after"] { box-shadow: inset 0 -2px 0 var(--arc-accent, currentColor); }
+.arc-folder-head[data-drop="into"] { background: var(--arc-hover); }
+.arc-dl-bar { height: 2px; background: var(--arc-hover); border-radius: 1px; overflow: hidden; margin: 2px var(--arc-pad-x, 8px); }
+.arc-dl-bar > i { display: block; height: 100%; background: currentColor; opacity: .5; transition: width .3s; }
+/* P2：窗口失焦时侧边栏变暗 */
+html[data-blurred="true"] #app { opacity: .72; filter: saturate(.6); transition: opacity .2s, filter .2s; }
+.arc-incognito { font-size: 11px; opacity: .55; padding: 0 6px; white-space: nowrap; }
+.arc-float-edit { box-shadow: 0 4px 16px rgb(0 0 0 / .25); }
+/* 不再有“当前标签滚出视区”的顶 / 底指示条：它是 fixed 贴窗口底边（bottom:2px）的 3px 通栏线，外观就是一条底部滚动条；Rea 无此指示条的来源（⛔ 源码未找到），Arc 底栏 / 侧栏也没有滚动条（rel35 底栏滚动条） */
+/* 空间主题：噪点纹理（同 Arc 的 grain） */
+html[data-noise="true"] body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: var(--arc-grain, .09); mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+.arc-fav-emoji { font-size: 18px; line-height: 1; }
+.arc-cal { gap: 6px; }
+.arc-cal-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--arc-accent); flex: none; margin: 0 5px; }
+.arc-cal-join { padding: 1px 8px; font-size: 11px; }
+
+/* 暗色：极细颗粒（参照 user-dark-bg.png 的细噪点），浅色不加 */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 2147483000; opacity: .018; mix-blend-mode: screen;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='1.4' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .9 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>"); } }
+:root[data-theme="dark"] body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 2147483000; opacity: .018; mix-blend-mode: screen;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='1.4' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .9 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>"); }
+
+/* —— 材质 / 层次（对照 Arc）：凸起 = 柔和投影 + 顶部 1px 内高光 + 发丝描边；无光晕、无装饰性渐变 —— */
+:root {
+  --arc-hairline: rgb(0 0 0 / .07);
+  --arc-raise: 0 0 0 .5px rgb(0 0 0 / .06), 0 1px 2px rgb(0 0 0 / .06), 0 2px 6px -2px rgb(0 0 0 / .08), inset 0 1px 0 rgb(255 255 255 / .9);
+  --arc-raise-sm: 0 0 0 .5px rgb(0 0 0 / .05), 0 1px 1.5px rgb(0 0 0 / .05), inset 0 1px 0 rgb(255 255 255 / .55);
+  --arc-inset: inset 0 0 0 .5px rgb(0 0 0 / .06), inset 0 1px 1.5px rgb(0 0 0 / .04);
+  --arc-pop-shadow: 0 0 0 .5px rgb(0 0 0 / .11), 0 1px 2px rgb(0 0 0 / .06), 0 6px 14px -4px rgb(0 0 0 / .12), 0 18px 36px -12px rgb(0 0 0 / .16);
+  --arc-menu: rgb(252 252 254 / .86);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --arc-hairline: rgb(255 255 255 / .07);
+  --arc-raise: 0 0 0 .5px rgb(0 0 0 / .5), 0 1px 2px rgb(0 0 0 / .45), 0 3px 8px -3px rgb(0 0 0 / .5), inset 0 1px 0 rgb(255 255 255 / .09);
+  --arc-raise-sm: 0 0 0 .5px rgb(0 0 0 / .4), 0 1px 1.5px rgb(0 0 0 / .35), inset 0 1px 0 rgb(255 255 255 / .06);
+  --arc-inset: inset 0 0 0 .5px rgb(255 255 255 / .06), inset 0 1px 2px rgb(0 0 0 / .35);
+  --arc-pop-shadow: 0 0 0 .5px rgb(255 255 255 / .09), 0 1px 2px rgb(0 0 0 / .5), 0 8px 18px -6px rgb(0 0 0 / .6), 0 22px 40px -14px rgb(0 0 0 / .55);
+  --arc-menu: rgb(36 38 38 / .86) /* Neutral15 #242626，同 --arc-pop-solid */;
+} }
+:root[data-theme="dark"] {
+  --arc-hairline: rgb(255 255 255 / .07);
+  --arc-raise: 0 0 0 .5px rgb(0 0 0 / .5), 0 1px 2px rgb(0 0 0 / .45), 0 3px 8px -3px rgb(0 0 0 / .5), inset 0 1px 0 rgb(255 255 255 / .09);
+  --arc-raise-sm: 0 0 0 .5px rgb(0 0 0 / .4), 0 1px 1.5px rgb(0 0 0 / .35), inset 0 1px 0 rgb(255 255 255 / .06);
+  --arc-inset: inset 0 0 0 .5px rgb(255 255 255 / .06), inset 0 1px 2px rgb(0 0 0 / .35);
+  --arc-pop-shadow: 0 0 0 .5px rgb(255 255 255 / .09), 0 1px 2px rgb(0 0 0 / .5), 0 8px 18px -6px rgb(0 0 0 / .6), 0 22px 40px -14px rgb(0 0 0 / .55);
+  --arc-menu: rgb(36 38 38 / .86) /* Neutral15 #242626，同 --arc-pop-solid */;
+}
+/* 选中标签卡片：凸起 */
+:root .arc-tab.active { box-shadow: var(--arc-raise); }
+:root .arc-tab:active:not(.active) { background: var(--arc-press); }
+/* 收藏格：轻凸起 + 内描边；打开 / 当前更亮；按下下沉 */
+/* F-05：收藏磁贴阴影改由 spaces/style.ts 的磁贴专用 --fav-shadow（0 1px 2px rgb(0 0 0/.1)，各状态不变）提供 */
+/* 地址框：内凹 */
+:root .arc-urlbar { box-shadow: var(--arc-inset); }
+/* 空间标题胶囊：发丝描边 + 极轻内高光 */
+:root .arc-space-title { box-shadow: inset 0 0 0 .5px var(--arc-hairline); }
+:root .arc-space-title:active { background: var(--arc-press); }
+/* 底部按钮：悬停浮起、按下下沉 */
+:root .arc-slot-bottom .arc-icon-btn:hover { box-shadow: var(--arc-raise-sm); }
+:root .arc-slot-bottom .arc-icon-btn:active, :root .arc-icon-btn:active { box-shadow: var(--arc-inset); }
+/* 空间切换：当前空间凸起成小圆片 */
+/* 菜单 / 浮层：分层投影 + 发丝边 + 半透明毛玻璃 */
+:root .arc-menu, :root .arc-toast { background: var(--arc-menu); box-shadow: var(--arc-pop-shadow); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); }
+:root .arc-menu-item:active { background: var(--arc-press); }
+/* 命令栏输入：内凹 */
+:root .arc-cmd-input { box-shadow: var(--arc-inset); }
+:root .arc-list-row.sel { box-shadow: var(--arc-raise-sm); }
+/* 拖拽中：源行半透明 */
+:root .arc-row.dragging, :root .arc-tab.dragging, :root .arc-folder-head.dragging, :root .arc-fav-tile.dragging { opacity: 0; }
+:root .arc-lift { background: var(--arc-active); box-shadow: var(--arc-raise); border-radius: var(--arc-r); }
+/* 设置行（侧边栏浮层）：标题 + 说明 | 控件；子设置缩进 */
+.arc-setting-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.arc-setting-desc { color: var(--arc-muted); font-size: 11px; line-height: 1.35; }
+.arc-setting-sub { padding-left: 12px; }
+.arc-setting-caption { font-size: 11px; color: var(--arc-muted); margin-top: 4px; }
+.arc-setting-group { display: flex; flex-direction: column; gap: 6px; }
+.arc-setting[hidden] { display: none !important; }
+/* 固定标签：当前 = 凸起卡片（同 Today）；多选选中 = 轻凸起 + 主题色发丝边；未加载 = 平；悬停 / 按下与普通行一致 */
+:root .arc-pinned .arc-tab.active, :root .arc-folder-body .arc-tab.active { box-shadow: var(--arc-raise); }
+/* 审计 52193 P-03：多选 = TabCellBackgroundMutiselected α.10、无描边无阴影（Rea sidebar-features.md §0.1 T-C8），底色见 plugins/tabs/style.ts；多选且当前 = 当前标签凸起，去掉强调色发丝边 */
+:root .arc-tab.selected:not(.active) { box-shadow: none; }
+:root .arc-tab.selected.active { box-shadow: var(--arc-raise); }
+:root .arc-pinned .arc-tab:active:not(.active), :root .arc-folder-head:active { background: var(--arc-press); }
+:root .arc-menu-item:focus-visible { background: var(--arc-selected); outline: none; }
+/* 输入框统一高度（Arc）：普通输入 / 下拉 32px，地址框 36px；文字垂直居中 */
+.arc-input:not(textarea):not(.arc-cmd-input):not(.arc-rename) { min-height: 32px; padding-top: 0; padding-bottom: 0; height: 32px; }
+.arc-dropdown > button, .arc-field:not(textarea) { min-height: 32px; }
+.arc-float-edit.arc-rename { height: 32px; }
+
+/* —— 行状态校准（Arc 实测值，见 arc-source-analysis.md A2）——
+ * 选中：浅色 白 85% + 黑 20% 阴影；深色 白 20%、无阴影。悬停：黑 10% / 白 15%。按下：6.5%。
+ * 上一个标签：白 32% / 8%（悬停 50% / 12%）。多选：黑 10% / 白 10%。分隔线：15%。 */
+:root {
+  --arc-hover: rgb(14 15 16 / .10); --arc-press: rgb(14 15 16 / .065); --arc-selected: rgb(0 0 0 / .10);
+  --arc-active: rgb(255 255 255 / .85); --arc-prev: rgb(255 255 255 / .32); --arc-prev-hover: rgb(255 255 255 / .50);
+  --arc-divider: rgb(14 15 16 / .15);
+  --arc-row-shadow: 0 1px 3px rgb(0 0 0 / .20);
+}
+:root[data-theme="dark"] {
+  --arc-hover: rgb(250 251 255 / .15); --arc-press: rgb(250 251 255 / .065); --arc-selected: rgb(250 251 255 / .10);
+  --arc-active: rgb(255 255 255 / .20); --arc-prev: rgb(250 251 255 / .08); --arc-prev-hover: rgb(250 251 255 / .12);
+  --arc-divider: rgb(250 251 255 / .15); --arc-row-shadow: none;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --arc-hover: rgb(250 251 255 / .15); --arc-press: rgb(250 251 255 / .065); --arc-selected: rgb(250 251 255 / .10);
+  --arc-active: rgb(255 255 255 / .20); --arc-prev: rgb(250 251 255 / .08); --arc-prev-hover: rgb(250 251 255 / .12);
+  --arc-divider: rgb(250 251 255 / .15); --arc-row-shadow: none;
+} }
+:root .arc-tab.active, :root .arc-pinned .arc-tab.active, :root .arc-folder-body .arc-tab.active { background: var(--arc-active); box-shadow: var(--arc-row-shadow); }
+:root .arc-tab:not(.active):hover, :root .arc-folder-head:hover { background: var(--arc-hover); }
+:root .arc-tab:not(.active):active, :root .arc-folder-head:active { background: var(--arc-press); }
+:root .arc-tab.arc-prev:not(.active) { background: var(--arc-prev); }
+:root .arc-tab.arc-prev:not(.active):hover { background: var(--arc-prev-hover); }
+
+/* 自适应配色：页面颜色盖过空间主题色，平滑过渡（@property 让自定义属性可插值） */
+@property --arc-adaptive { syntax: "<color>"; inherits: true; initial-value: transparent; }
+:root { transition: --arc-adaptive .35s ease; }
+:root[data-adaptive] { --arc-tint: var(--arc-adaptive) !important; --arc-base: var(--arc-adaptive) !important; }
+
+/* —— Arc 1.169 反编译常量（sidebar-full-spec.md 变更清单 / cgf_values.tsv）——
+ * SidebarCellConstants：行 40（可见选中框 36 高、上下各 2）、选中框内缩 8、圆角 12、favicon 16、图标容器 24、关闭按钮 24、图标-标题间距 6、缩进 16。
+ * 分隔线 0.5 高、左右 18；底栏 50；通用动画 0.08s；按下缩放 0.992（spring response .2 / damping .5 ≈ 下面的曲线）；拖拽占位圆角 20。
+ * 行标题色：浅 #0E0F10 α.9、深 #FFF α.8。宽度 164–500 / 默认 228 由浏览器原生侧栏决定，扩展无法设置。 */
+:root {
+  --arc-row-h: 36px; --arc-row-pitch: 40px; --arc-row-inset: 8px; --arc-row-r: 12px;
+  --arc-fav-size: 16px; --arc-icon-box: 24px; --arc-icon-pad: calc((var(--arc-icon-box) - var(--arc-fav-size)) / 2); --arc-close-size: 24px; --arc-gap: 6px; --arc-indent: 16px;
+  --arc-t-fast: 80ms; --arc-press-scale: .992; --arc-press-ease: cubic-bezier(.3, 1.6, .5, 1);
+  --arc-drag-ph-r: 20px; --arc-bottom-h: 50px;
+  --arc-row-fg: rgb(14 15 16 / .9);
+}
+:root[data-theme="dark"] { --arc-row-fg: rgb(255 255 255 / .8); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --arc-row-fg: rgb(255 255 255 / .8); } }
+:root .arc-tab, :root .arc-folder-head { height: var(--arc-row-h); margin: calc((var(--arc-row-pitch) - var(--arc-row-h)) / 2) 0; border-radius: var(--arc-row-r); gap: var(--arc-gap); color: var(--arc-row-fg); transition: background var(--arc-t-fast) ease-out, transform var(--arc-t-fast) var(--arc-press-ease); }
+:root .arc-tab + .arc-tab, :root .arc-tab + .arc-folder, :root .arc-folder + .arc-tab { margin-top: calc((var(--arc-row-pitch) - var(--arc-row-h)) / 2); }
+:root .arc-tab:active, :root .arc-folder-head:active, :root .arc-newtab:active { transform: scale(var(--arc-press-scale)); }
+:root .arc-tab-close { width: var(--arc-close-size); height: var(--arc-close-size); border-radius: 8px; }
+:root .arc-tab-title { color: inherit; }
+:root .arc-divider { height: .5px; margin: 8px 18px; /* 上下 8 = DividerInnerSpacing（sidebar-full-spec 变更 #1） */ background: var(--arc-divider); }
+:root .arc-slot-bottom { min-height: var(--arc-bottom-h); box-sizing: border-box; }
+:root .arc-drag-placeholder, :root .arc-tab.dragging-ph { border-radius: var(--arc-drag-ph-r); }
+:root .arc-fav-tile:active { transform: scale(var(--arc-press-scale)); }
+/* Library 图标栏：圆角 12、选中 10% / hover 5% 填充、未选中标签 0.7、按下内缩 2、图标 28 */
+:root .arc-lib-item { border-radius: 12px; transition: background var(--arc-t-fast) ease-out; }
+:root .arc-lib-item:hover { background: color-mix(in srgb, var(--lib-primary, var(--arc-fg)) 5%, transparent); }
+:root .arc-lib-item.active { background: color-mix(in srgb, var(--lib-primary, var(--arc-fg)) 10%, transparent); box-shadow: none; }
+:root .arc-lib-item:active { background: color-mix(in srgb, var(--arc-fg) 10%, transparent); transform: scale(calc(1 - 4 / 92)); }
+:root .arc-lib-item:not(.active) .arc-lib-lbl { opacity: .7; }
+:root .arc-lib-ic, :root .arc-lib-ic > svg { width: 28px; height: 28px; } /* 资料库页内图标 ⛔ */
+:root .arc-lib-btn { width: 32px; height: 32px; min-width: 32px; padding: 0; background: transparent; } /* Library 按钮 32（bottom-bar.md §5）；底色 / 形状 ⛔ */
+/* Library 列表通用样式（Boosts 等面板不加载 library 插件样式，故放公共样式；自 library/style.ts 迁入，值与注释不变） */
+.arc-lib-list { flex: 1; overflow: auto; padding: 0 4px 10px 2px; display: flex; flex-direction: column; gap: 0; }
+/* §8 FUN_1026d7758：leftAccessory 只有 24×24 frame，无背景/填充层 → 无背景（已确认）；imageSize 16。框圆角 6 ⛔ */
+.arc-lib-favbox { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: 6px; background: none; }
+/* 无 favicon 占位：favBox() 在无图/默认图时不插入 img.arc-fav，框留空 → 用 :has 判定显示背景块。底色 fg 5% / 圆角 6（旧值）⛔ 待 Rea（字形、颜色、圆角、尺寸）；注意加载中也会短暂显示 */
+.arc-lib-favbox.no-fav { background: color-mix(in srgb, var(--arc-fg) 5%, transparent); border-radius: 8px; } /* ImageOrPlaceholder（FUN_1026d5f54，archive-page.md §9）：RoundedRectangle(8, continuous)，Color.primary α.05，无字形，填满 24×24 外框；是否再受 imageSize 16 限制 ⛔ */
+.arc-lib-favbox > .arc-fav { width: 16px; height: 16px; border-radius: 3px; } /* 16 = §8 imageSize；圆角 3 ⛔ 源码未找到 */
+/* §8 VStack(.leading, spacing 2){title, subtitle}；标题 14 Regular，primary α(.85 / 高亮 1)，lineLimit 1；副标题 12 .secondary，lineLimit 1，空则不显示 */
+.arc-lib-text { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 2px; }
+.arc-lib-title, .arc-lib-url { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.arc-lib-title { font-size: 14px; font-weight: 400; color: var(--arc-fg); opacity: .85; }
+.arc-lib-row:hover .arc-lib-title, .arc-lib-row:focus-visible .arc-lib-title, .arc-lib-row.current .arc-lib-title { opacity: 1; }
+.arc-lib-url { font-size: 12px; font-weight: 400; color: color-mix(in srgb, var(--arc-fg) 60%, transparent); } /* .secondary = Foreground2 .6（library-full-spec §3） */
+.arc-lib-url:empty { display: none; }
+/* 归档：过滤胶囊、空状态、hover 才出现的 Restore / Delete；已删除的下载变淡 */
+.arc-lib-pills { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px; }
+.arc-lib-pills:empty { display: none; }
+.arc-lib-pill { all: unset; display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; background: color-mix(in srgb, var(--arc-fg) 10%, transparent); color: var(--arc-fg); cursor: default; }
+.arc-lib-pill:hover { background: color-mix(in srgb, var(--arc-fg) 15%, transparent); }
+.arc-lib-empty { display: grid; gap: 6px; justify-items: center; text-align: center; padding: 48px 20px; color: var(--arc-muted); }
+.arc-lib-empty b { font-size: 15px; color: var(--arc-fg); }
+/* archive-page.md §8：按钮在 hover 或选中（.current）时显示，否则宽 0 α0 真正收起（不用 display:none，与 library/style.ts .arc-lib-acts 一致） */
+:root .arc-lib-row .arc-lib-act { width: 0; min-width: 0; padding: 0; opacity: 0; overflow: hidden; }
+:root .arc-lib-row:hover .arc-lib-act, :root .arc-lib-row:focus-within .arc-lib-act, :root .arc-lib-row.current .arc-lib-act { display: inline-grid; width: 28px; opacity: 1; }
+:root .arc-lib-row:hover .arc-lib-acts, :root .arc-lib-row:focus-within .arc-lib-acts, :root .arc-lib-row.current .arc-lib-acts { width: 66px; opacity: 1; }
+:root .arc-lib-list.scrolling .arc-lib-acts, :root .arc-lib-list.scrolling .arc-lib-act { width: 0; opacity: 0; }
+.arc-lib-row.gone { opacity: .55; }
+/* Library 底栏按钮角标（新下载）。审计 52193 多出项 #4：强调色小圆点 Arc 没有（Arc 的 HomeBadging 是缩略图弹层，sidebar-features.md:359、593），
+ * 默认关闭；只有 :root[data-lib-badge]（LibraryView 设置 “libBadge”，见 arc-ui/audit52193-4.patch）时显示。开关只管圆点，按钮放大 1.2× 见下方（常开） */
+.arc-lib-btn { position: relative; }
+:root[data-lib-badge] .arc-lib-btn.badged::after { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--arc-accent); box-shadow: 0 0 0 1.5px var(--arc-base); }
+:root .arc-slot-bottom { height: var(--arc-bottom-h); min-height: 0; align-items: center; }
+/* Library 选中项图标 = primaryColor α1（library-entries.md §2/§3：按图层名覆盖色，选中不变强调色；第二色由 Lottie secondaryColor 层显示）；原 var(--arc-accent) 来自截图推断，已由源码推翻 */
+:root .arc-lib-item.active .arc-lib-ic, :root[data-theme="dark"] .arc-lib-item.active .arc-lib-ic { color: var(--lib-primary, var(--arc-fg)); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .arc-lib-item.active .arc-lib-ic { color: var(--lib-primary, var(--arc-fg)); } }
+/* —— 底栏 Space 切换器（space-switcher.md，提取 / 强推断值）——
+ * 无图标 = 8×8 实心圆点（紧凑 4×4），主题前景色；emoji 14px（紧凑 12px）。
+ * 未选中：grayscale(1)、不透明度 .5（紧凑 .35）；hover .7；选中恢复原色、1.0。
+ * 项 32×32，宽度由 JS 按 clamp(…, 8, 34) 均分（--dock-w），< 22 紧凑；不换行，横向滚动；左右 inset 2；
+ * 选中底块圆角 6（颜色未提取，暂用中性淡底 —— 待确认）；按下 scale .95 / .13s。 */
+:root .arc-space-bar { gap: 0; padding: 0 2px; flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: none; scroll-behavior: smooth; min-width: 0; flex: 1 1 auto; }
+:root .arc-space-dot, :root .arc-space-dot.active {
+  width: var(--dock-w, 32px); min-width: 8px; max-width: 34px; height: 32px; border-radius: 6px; background: transparent; box-shadow: none; transform: none;
+  font-size: 14px; line-height: 1; opacity: .5; filter: grayscale(1);
+  transition: opacity .16s ease, filter .16s ease, transform .13s ease, background .16s ease;
+}
+:root .arc-space-dot:hover { opacity: .7; background: transparent; }
+/* 选中 / 未选中 = activeIconView / inactiveIconView 两张图切换（全彩 vs 灰度）+ pageIndicator；无选中底块（bottom-bar.md §6，取代 space-switcher.md §3） */
+:root .arc-space-dot.active { opacity: 1; filter: none; background: transparent; }
+/* pageIndicator：尺寸 / 位置 / 颜色 ⛔ 源码未找到（占位：选中项下方 4×4 前景色圆点） */
+:root .arc-space-dot.active::after { content: ""; position: absolute; left: 50%; bottom: 1px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: currentColor; opacity: .5; }
+:root .arc-space-dot:active { transform: scale(.95); }
+:root .arc-space-dot:empty::before { width: 8px; height: 8px; border-radius: 50%; background: rgb(0 0 0/.5); } /* 圆点 8×8、ForegroundSecondary（space-switcher.md §1 / 表 @0x1027d5cd0） */
+/* 深色判定同底栏按钮（--bb-dark：data-theme=dark / 系统深色且非强制浅色 / ToneProbe data-bb-dark）；51996：只认 data-theme=dark，主题“自动”时深色底上画成 50% 黑，几乎看不见。
+ * ForegroundSecondary：浅 #000 α.5 / 深 #FFF α.5（sidebar-features.md:27 T-C12） */
+:root .arc-space-dot:empty::before { background: rgb(calc(255 * var(--bb-dark, 0)) calc(255 * var(--bb-dark, 0)) calc(255 * var(--bb-dark, 0)) / .5); }
+:root .arc-space-bar.compact .arc-space-dot { font-size: 12px; }
+:root .arc-space-bar.compact .arc-space-dot:empty::before { width: 4px; height: 4px; } /* 紧凑圆点 4×4（space-switcher.md §1 @0x1027d5a1c） */
+:root .arc-space-dot.drop { background: var(--arc-hover); }
+/* “+”：AddSpacePlus* 颜色是否用于底栏“+”源码未确认（bottom-bar.md §98）→ 不用；形状 / 尺寸 / 颜色 ⛔ 源码未找到：透明底、前景色 */
+:root .arc-plus > .arc-icon-btn, :root .arc-space-new { width: 28px; height: 28px; /* ⛔ */ border-radius: 6px; /* ⛔ */ background: transparent; color: var(--arc-fg); opacity: 1; }
+:root .arc-plus > .arc-icon-btn > .arc-svg, :root .arc-space-new > .arc-svg { opacity: .7; /* ⛔ */ transition: opacity .16s ease; }
+:root .arc-plus > .arc-icon-btn:hover > .arc-svg, :root .arc-space-new:hover > .arc-svg, :root .arc-plus > .arc-icon-btn:focus-visible > .arc-svg, :root .arc-plus > .arc-icon-btn.open > .arc-svg { opacity: 1; }
+.arc-tab.arc-flash { animation: arc-flash .9s ease-out; } @keyframes arc-flash { 0%, 40% { box-shadow: 0 0 0 2px var(--arc-accent); } 100% { box-shadow: none; } }
+.arc-menu-kbd { margin-left: auto; padding-left: 16px; font: inherit; font-size: 11.5px; color: var(--arc-muted); letter-spacing: .02em; } .arc-menu-item .arc-menu-kbd + .arc-svg { margin-left: 6px; }
+/* —— 2026-10-16 分析补充（sidebar-full-spec #3/#4、library-full-spec #2/#3、space-switcher.md）—— */
+/* Space 切换器选中底 = GrayA4：浅 #000 α.071 / 深 #FFF α.077；未选中 浅 .5 / 深 .35 */
+/* 来源：GrayA4 = arcdl/colors.tsv:704/787，space-switcher.md @0x1027d5184；0.35 = 深色、0.5 = 浅色 ✅ unconfirmed-values-verified.md §5（@0x1027d5a6c arcIsDark + fcsel）；灰度级别、滑动弹簧、过渡 .16s：源码未找到 */
+/* 选中底块已取消（bottom-bar.md §6） */
+:root[data-theme="dark"] .arc-space-dot:not(.active):not(:hover) { opacity: .35; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .arc-space-dot:not(.active):not(:hover) { opacity: .35; }
+}
+/* 拖拽：悬停行 = 主题色 50%；源行隐藏（上面 .dragging opacity 0）；拖影 = 原生 drag image（不加自绘阴影）；
+ * 落下项 spring damping .99 / response .14 ≈ 临界阻尼，约 .28s 收敛 */
+:root .arc-lift { box-shadow: none; }
+/* 来源：0.5 = sidebar-full-spec.md 变更 #3 drawDraggingDestinationFeedbackInRect withAlphaSafe(0.5)（填充色待确认）；ζ0.99/r0.14 = 变更 #4 FUN_10097337c；CSS 曲线 / 0.28s 为该 spring 的近似；落点填充色、scale 起始值、拖拽阴影：源码未找到（unconfirmed-values-verified.md §4） */
+:root .arc-drop-over { background: color-mix(in srgb, var(--arc-accent) 50%, transparent) !important; } /* 填充色（accent）源码未找到；仅 α0.5 有来源 */
+:root .arc-drop-in { animation: arc-drop-in .28s cubic-bezier(.25, 1, .5, 1) both; }
+@keyframes arc-drop-in { from { opacity: 0; transform: scale(0); } /* scale 起始值 0 源码未找到 */ to { opacity: 1; transform: scale(1); } }
+/* Library：无进出动画（瞬切）；Esc 退出（PanelShell）；rail 标签 11px */
+:root .arc-overlay[data-overlay="library"] { animation: none; }
+:root .arc-lib-lbl { font-size: 11px; } /* ✅ 11pt：unconfirmed-values-verified.md §6（@0x1026ff0b0）；字重 semibold 源码未找到 */
+
+/* 菜单：不超出侧边栏（加了快捷键列后会被右边裁掉）；标签过长省略 */
+.arc-menu { max-width: calc(100vw - 8px); box-sizing: border-box; }
+.arc-menu-label { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.arc-menu-kbd { flex: none; }
+/* 命令栏结果：副标题不再只给 45% 宽 */
+.arc-cmd-results .arc-list-row small { max-width: 60%; }
+/* —— 弹出菜单统一（Arc 的右键 / 更多 / 设置下拉都是 macOS 原生 NSMenu）——
+ * 菜单圆角 8、内边距 5；行 22、字号 13、左右 10，选中高亮 = 强调色圆角 4 + 白字（含快捷键）；
+ * 勾选 ✓ 放在左侧槽位；分隔线 1px 前景 10%、上下 5 左右 10；出现无动画（NSMenu 直接出现）。 */
+/* 右键菜单 = 原生 NSMenu（menus-spec.md §3）：以下所有尺寸 / 颜色均为 源码未找到 (native NSMenu)，按 macOS 原生菜单外观模仿（圆角 8、行 22、13pt、分隔线、勾选列 22）。
+ * 审计 52193 X-02：高亮不再用主题强调色。NSMenu 的高亮由系统绘制（Rea menus-spec.md §3.1、sidebar-features.md:410 T-K2），Rea 没有色值 →
+ * 不写死任何颜色，用 CSS 系统色：AccentColor / AccentColorText（= 系统强调色，macOS 默认蓝），不支持时退回 Highlight / HighlightText。快捷键 / 图标 / 危险项跟随同一高亮。 */
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) { animation: none; }
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel):not(.arc-space-menu) { border-radius: 8px; padding: 5px; }
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item { min-height: 22px; height: auto; padding: 2px 10px 2px 22px; font-size: 13px; border-radius: 4px; position: relative; }
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item:hover:not(.disabled),
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item:focus-visible:not(.disabled),
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item.sub-open { background: Highlight; color: HighlightText; }
+@supports (color: AccentColor) {
+  :root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item:hover:not(.disabled),
+  :root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item:focus-visible:not(.disabled),
+  :root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item.sub-open { background: AccentColor; color: AccentColorText; }
+}
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item:hover:not(.disabled) :is(.arc-menu-kbd, .arc-svg),
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item:focus-visible:not(.disabled) :is(.arc-menu-kbd, .arc-svg),
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item.sub-open :is(.arc-menu-kbd, .arc-svg) { color: inherit; }
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item.checked .arc-menu-label::after { content: none; }
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-item.checked::before { content: "✓"; position: absolute; left: 7px; font-size: 12px; }
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-sep { height: 1px; margin: 5px 10px; background: color-mix(in srgb, var(--arc-fg) 10%, transparent); }
+:root .arc-menu:not(.arc-plus-menu):not(.arc-panel) .arc-menu-kbd { font-size: 13px; padding-left: 20px; }
+/* —— Toast（/workspace/arc-analysis/toast-spec.md，Toasts/ShinyToastView）——
+ * ✅ 内边距 水平 12 / 垂直 10（FUN_1018f4418）；最小高 42；圆角 12；背景 = 调色板背景 ×0.8；高光渐变 浅 white .4→.2 / 深 black .2→.4；
+ * ✅ 描边 black ×0.3；阴影 black ×0.2；出现 / 消失 spring(response .4, damping .7)（CSS linear() 采样近似）；停留 5s；点击 / 拖动关闭（PanelShell.toast）。
+ * 位置：右上角（location 3，见上方 .arc-toast）。源码未找到（保留现值）：外边距、调色板背景色（用菜单底色）、描边宽（1px）、阴影半径 / 偏移、字号 12、宽度、文字色按亮度自动选（用主题前景色）。 */
+:root { --arc-spring-toast: linear(0, 0.089, 0.28, 0.494, 0.685, 0.834, 0.938, 1.001, 1.034, 1.045, 1.044, 1.036, 1.027, 1.017, 1.01, 1.004, 1.001, 0.999, 0.998, 0.998, 1); }
+:root .arc-toast {
+  display: flex; align-items: center; box-sizing: border-box; min-height: 42px; padding: 10px 12px; border-radius: 12px;
+  background: linear-gradient(rgb(255 255 255 / .4), rgb(255 255 255 / .2)), color-mix(in srgb, var(--arc-menu) 80%, transparent);
+  border: 1px solid rgb(0 0 0 / .3); box-shadow: 0 4px 16px rgb(0 0 0 / .2);
+  cursor: pointer; user-select: none; touch-action: none;
+  animation: arc-toast-in .6s var(--arc-spring-toast) both;
+}
+:root[data-theme="dark"] .arc-toast { background: linear-gradient(rgb(0 0 0 / .2), rgb(0 0 0 / .4)), color-mix(in srgb, var(--arc-menu) 80%, transparent); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .arc-toast { background: linear-gradient(rgb(0 0 0 / .2), rgb(0 0 0 / .4)), color-mix(in srgb, var(--arc-menu) 80%, transparent); } }
+:root .arc-toast.out { animation: arc-toast-out .6s var(--arc-spring-toast) both; }
+@keyframes arc-toast-in { from { opacity: 0; transform: translate(0, 12px) scale(.96); } to { opacity: 1; transform: translate(0, 0) scale(1); } }
+@keyframes arc-toast-out { from { opacity: 1; transform: translate(var(--toast-dx, 0px), 0); } to { opacity: 0; transform: translate(var(--toast-dx, 0px), 12px) scale(.96); } }
+.arc-urlbar-actions .arc-urlbar-ind { opacity: 1 !important; visibility: visible !important; }
+
+/* 点击后不留焦点环：只给键盘焦点（:focus-visible）画环（验收 accept-live-0.1.0.51947） */
+button:focus:not(:focus-visible), [role="button"]:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible), summary:focus:not(:focus-visible) { outline: none; box-shadow: none; }
+
+/* ===== 底栏 / ArcButtonStyle（bottom-bar.md §7，变更 #4；放在最后覆盖前面的旧值） ===== */
+/* 布局 §7.4：高 50；Library 距左 8、“+”距右 8，垂直居中；中间 Space 区填满，无额外间距 */
+:root .arc-slot-bottom { height: 50px; min-height: 0; padding: 0; /* 外层 #app 已有左右 8：Library 距左 8、＋ 距右 8（51979 实测 16） */ gap: 0; align-items: center; box-shadow: none; }
+:root .arc-slot-bottom .arc-part[data-plugin="Spaces"] { flex: 1 1 auto; min-width: 0; }
+:root .arc-space-bar { padding: 0 2px; gap: 0; } /* 审计 52193 B-01：contentInsets 左右 2（Rea sidebar-features.md:275；space-switcher.md），原 padding 0 覆盖了 L451 */
+/* ArcButtonStyle（Library 与“+”共用）§7.3：32×32、圆角 6、静止透明 */
+:root .arc-slot-bottom :is(.arc-lib-btn, .arc-plus-btn, .arc-space-new) {
+  width: 32px; min-width: 32px; height: 32px; padding: 0; border-radius: 6px; background: transparent; box-shadow: none !important; opacity: 1;
+  color: var(--bb-fg); /* GrayA11 */
+  transition: background .1s ease-in, color .1s ease-in, transform .3s cubic-bezier(.34,1.45,.64,1); /* hover easeIn 0.1；按下 spring(0.3, 0.6) 以 cubic-bezier 近似 */
+}
+:root .arc-slot-bottom :is(.arc-lib-btn, .arc-plus-btn, .arc-space-new):hover { background: var(--bb-hover); } /* GrayA4 */
+:root .arc-slot-bottom :is(.arc-lib-btn, .arc-plus-btn, .arc-space-new):active { background: var(--bb-press); color: var(--bb-press-fg); transform: scale(.95); } /* GrayA5 / GrayA12 */
+:root .arc-slot-bottom :is(.arc-lib-btn, .arc-plus-btn, .arc-space-new):disabled { color: var(--bb-dis); } /* GrayA8 */
+/* 深浅色取值（变量）：深色 = data-theme=dark，或主题“自动”且系统深色（51979 实机：data-theme 不是 dark 时图标用了浅色值 56.5% 黑，在深色底上近黑） */
+:root { --bb-fg: rgb(0 0 0/.565); --bb-hover: rgb(0 0 0/.071); --bb-press: rgb(0 0 0/.09); --bb-press-fg: rgb(0 0 0/.91); --bb-dis: rgb(0 0 0/.22); --bb-dark: 0; }
+:root[data-theme="dark"] { --bb-fg: rgb(255 255 255/.592); --bb-hover: rgb(255 255 255/.077); --bb-press: rgb(255 255 255/.103); --bb-press-fg: rgb(255 255 255/.923); --bb-dis: rgb(255 255 255/.249); --bb-dark: 1; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bb-fg: rgb(255 255 255/.592); --bb-hover: rgb(255 255 255/.077); --bb-press: rgb(255 255 255/.103); --bb-press-fg: rgb(255 255 255/.923); --bb-dis: rgb(255 255 255/.249); --bb-dark: 1; } }
+/* 实际底色优先（@api/ToneProbe 看正文颜色亮度） */
+:root[data-bb-dark="1"] { --bb-fg: rgb(255 255 255/.592); --bb-hover: rgb(255 255 255/.077); --bb-press: rgb(255 255 255/.103); --bb-press-fg: rgb(255 255 255/.923); --bb-dis: rgb(255 255 255/.249); --bb-dark: 1; }
+:root[data-bb-dark="0"] { --bb-fg: rgb(0 0 0/.565); --bb-hover: rgb(0 0 0/.071); --bb-press: rgb(0 0 0/.09); --bb-press-fg: rgb(0 0 0/.91); --bb-dis: rgb(0 0 0/.22); --bb-dark: 0; }
+:root .arc-slot-bottom :is(.arc-lib-btn, .arc-plus-btn, .arc-space-new) > .arc-svg { opacity: 1; width: 16px; height: 16px; } /* 图标字号 16（Size _32） */
+/* “+”渐变层 §7.2：圆角 12、1pt 描边 #FF9999→#0047FF（左上→右下）叠白底；显示条件 ⛔ → 默认不显示（.gradient 类才显示） */
+:root .arc-plus-btn.gradient { border-radius: 12px; background: linear-gradient(#fff, #fff) padding-box, linear-gradient(to bottom right, #ff9999, #0047ff) border-box; border: 1px solid transparent; }
+/* Library 图标 ARCUI BoxOfThingsIcon（library-boxofthings.md，取代 bottom-bar.md 的三角尺寸 / spring / reduceMotion 说法）。
+ * 尺寸 = 资源 @1x 像素当 px（代码里没有 frame，pt 尺寸 ⛔）；所有层 ZStack 居中；变换顺序同 SwiftUI 修饰链：scale → rotate → offset。
+ * 曲线 / 时长 ⛔（Animation 初始值未找到）→ 沿用按钮 hover 0.1s easeIn；无 spring、无 blendMode；
+ * box 的 0.9 修饰 ⛔（类型未解析）→ 不实现；template 渲染 ⛔ → 沿用按钮前景色遮罩着色；press 缩放：BoxOfThings 内没有。 */
+.arc-boxthings { position: relative; display: block; width: 16px; height: 16px; transition: filter .1s ease-in; }
+.arc-boxthings i { position: absolute; left: 50%; top: 50%; display: block; transition: transform .1s ease-in, opacity .1s ease-in, filter .1s ease-in; }
+.arc-boxthings i > b { display: block; width: 100%; height: 100%; background: currentColor; -webkit-mask: var(--m) center / 100% 100% no-repeat; mask: var(--m) center / 100% 100% no-repeat; }
+/* glow 81×27：scale (0.275, 0.4)、offset (0,−7)、blur 0.875、前景白 opacity hover ? 0.3 : 0；只在深色模式可见 */
+.arc-boxthings .g { width: 81px; height: 27px; --m: url(icons/boxofthings/glow.png); transform: translate(-50%, -50%) translate(0, -7px) scale(.275, .4); opacity: 0; filter: blur(.875px); }
+.arc-boxthings .g > b { background: #fff; opacity: 0; transition: opacity .1s ease-in; }
+.arc-boxthings .g { opacity: var(--bb-dark); }
+.arc-boxthings.hover .g > b { opacity: .3; } /* 前景 white.opacity(hover ? 0.3 : 0)；浅色时整层 opacity 0（--bb-dark） */
+/* star 9×9：遮罩 Rectangle 28×11 offset (0,−8)；星相对 ZStack 中心 offset (−2.5,−3) → (−2.5,−4.5)，旋转 −9° → 105° */
+.arc-boxthings .sm { width: 28px; height: 11px; transform: translate(-50%, -50%) translate(0, -8px); overflow: hidden; }
+.arc-boxthings .s { width: 9px; height: 9px; --m: url(icons/boxofthings/star.png); transform: translate(-50%, -50%) translate(-2.5px, 5px) rotate(-9deg); } /* 5 = −3 − (−8) */
+.arc-boxthings.hover .s { transform: translate(-50%, -50%) translate(-2.5px, 3.5px) rotate(105deg); } /* 3.5 = −4.5 − (−8) */
+/* triangle 4×3（system 12 ultraLight 字体修饰对图片无可见作用）：旋转 225° → 85°；offset (4.5,−3.5) → (6.5,−5)；tw1：scale 0.15、opacity 0.2 */
+.arc-boxthings .t { width: 4px; height: 3px; --m: url(icons/boxofthings/triangle.png); --sc: 1; transform: translate(-50%, -50%) translate(4.5px, -3.5px) rotate(225deg) scale(var(--sc)); }
+.arc-boxthings.hover .t { transform: translate(-50%, -50%) translate(6.5px, -5px) rotate(85deg) scale(var(--sc)); }
+.arc-boxthings.tw1 .t { --sc: .15; opacity: .2; }
+/* circle 2×2：offset (2,−7.5) → (3,−10)；tw2：scale 0.1、opacity 0.2 */
+.arc-boxthings .c { width: 2px; height: 2px; --m: url(icons/boxofthings/circle.png); --sc: 1; transform: translate(-50%, -50%) translate(2px, -7.5px) scale(var(--sc)); }
+.arc-boxthings.hover .c { transform: translate(-50%, -50%) translate(3px, -10px) scale(var(--sc)); }
+.arc-boxthings.tw2 .c { --sc: .1; opacity: .2; }
+/* box 12×9：offset (0, 3.5) */
+.arc-boxthings .b { width: 12px; height: 9px; --m: url(icons/boxofthings/box.png); transform: translate(-50%, -50%) translate(0, 3.5px); }
+/* 阴影：白色，只在深色 && hover：star / triangle radius 1，circle radius 2，整体 opacity 0.2 radius 2（x/y 0） */
+.arc-boxthings.hover :is(.s, .t) { filter: drop-shadow(0 0 1px rgb(255 255 255/var(--bb-dark))); }
+.arc-boxthings.hover .c { filter: drop-shadow(0 0 2px rgb(255 255 255/var(--bb-dark))); }
+.arc-boxthings.hover { filter: drop-shadow(0 0 2px rgb(255 255 255/calc(.2 * var(--bb-dark)))); }
+/* 有徽标：按钮放大到 1.2，0.15s（Rea sidebar-features.md:359 / :391，HomeBadging buttonScaled，bottom-bar.md:145）。Arc 原生行为：默认开启，不受 libBadge 开关控制（Cat 裁定） */
+:root .arc-slot-bottom .arc-lib-btn.badged { transform: scale(1.2); transition: transform .15s; }
+/* Space 项 hover：同 GrayA4 底、圆角 6；页面指示点 30% 颜色 */
+:root .arc-space-dot:hover { background: rgb(0 0 0/.071); border-radius: 6px; }
+:root[data-theme="dark"] .arc-space-dot:hover { background: rgb(255 255 255/.077); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .arc-space-dot:hover { background: rgb(255 255 255/.077); } } /* 系统深色同样生效 */
+:root .arc-space-dot.active::after { opacity: .3; }
+
+/* 焦点环：只在键盘导航（<html data-kbd-nav>，见 @api/FocusPolicy）时画；鼠标、快捷键（⌘T）、程序化 focus、菜单关闭归还焦点都不画 */
+:root:not([data-kbd-nav]) :is(button, a, summary, [role="button"], [role="menuitem"], [role="tab"], [tabindex]):is(:focus, :focus-visible) { outline: none !important; }
+:root:not([data-kbd-nav]) .arc-icon-btn:is(:focus, :focus-visible):not(:hover):not(:active) { box-shadow: none !important; }
+:root[data-kbd-nav] :is(button, a, summary, [role="button"], [role="menuitem"], [role="tab"]):focus { outline: 2px solid color-mix(in srgb, var(--arc-accent, #3b6cf6) 70%, transparent); outline-offset: 1px; } /* 键盘导航时才画环 */
+/* Library 行尾删除 / 恢复按钮 = HomeButton.AccessoryButton：背景 RoundedRectangle(cornerRadius: 8, style: .continuous)（more-button-icon.md §5）。
+ * CSS 无 continuous 曲率，用普通圆角 8；悬停 / 按下的调色板色值 ⛔ 源码未找到（沿用现有 .arc-icon-btn 悬停底）。 */
+:root .arc-lib-row .arc-lib-act { border-radius: 8px; }
+/* ===== 底栏 “+” 字形 = ARCUI.PlusMenuIcon（/workspace/arc-analysis/plus-glyph.md），代码绘制，不是 SF 符号 =====
+ * 两根 RoundedRectangle(cornerRadius 1, continuous)：线长 14.4（Size _32 查表 0x1036a7558）、线宽 2、第二根旋转 90°，居中（FUN_100af0d74）。CSS 无 continuous 曲率，用普通圆角 1。
+ * 颜色：十字本身不设色，沿用按钮前景色 currentColor（ArcButtonStyle：默认 GrayA11、按下 GrayA12、禁用 GrayA8，见上方 --bb-*）；十字是否另有专用色 ⛔ 源码未找到。
+ * 不旋转成 “×”（Rea 裁定，plus-glyph.md 已更正，与 bottom-bar.md 一致）：菜单打开时十字保持不变。 */
+:root { --arc-spring-press: linear(0, 0.079, 0.261, 0.476, 0.68, 0.847, 0.969, 1.045, 1.084, 1.095, 1.087, 1.07, 1.05, 1.03, 1.014, 1.003, 0.996, 0.992, 0.991, 0.992, 0.993, 0.995, 0.997, 0.999, 1); }
+:root .arc-slot-bottom .arc-plus-btn { position: relative; }
+:root .arc-slot-bottom .arc-plus-btn > .arc-svg { visibility: hidden; } /* icon("plus")（现为 SF plus 字形，ionGlyphs.ts）占位：不可见但保留 16×16 居中布局盒，供自测 align.ts 量“图标中心”（display:none 时盒为 0×0 → dy 失真）；十字由 ::before/::after 绘制、绝对定位居中，与此盒同心 */
+:root .arc-slot-bottom .arc-plus-btn::before, :root .arc-slot-bottom .arc-plus-btn::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 14.4px; height: 2px; margin: -1px 0 0 -7.2px; border-radius: 1px; background: currentColor;
+  transform: rotate(0deg);
+}
+:root .arc-slot-bottom .arc-plus-btn::after { transform: rotate(90deg); }
+/* 按下 scaleEffect 0.95，spring(response 0.3, damping 0.6)（plus-glyph.md L40 / 0x100a75978）：同样以 linear() 采样近似（0.5s），替换原 cubic-bezier 近似；悬停 easeIn 0.1 不变 */
+:root .arc-slot-bottom :is(.arc-lib-btn, .arc-plus-btn, .arc-space-new) { transition: background .1s ease-in, color .1s ease-in, transform .5s var(--arc-spring-press); }
+/* 共享菜单禁用项：仅改色（无 opacity）= Arc MenuDisabledText 浅 #ABABAB / 深 #797881（arc-colors-all.tsv:30/37，menus-spec.md:50）。
+   用 :where() 压低特异性（0,2,0），不覆盖 spaces/style.ts 的 Space 菜单规则（0,3,0）；“+”菜单（command/style.ts）排除。 */
+:root { --arc-disabled-text: #ababab; }
+:root[data-theme="dark"] { --arc-disabled-text: #797881; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --arc-disabled-text: #797881; } }
+:where(.arc-menu:not(.arc-plus-menu)) .arc-menu-item.disabled { color: var(--arc-disabled-text); cursor: default; }
+:where(.arc-menu:not(.arc-plus-menu)) .arc-menu-item.disabled :is(.arc-menu-label, .arc-menu-kbd, .arc-svg, .arc-sym, .arc-menu-chevron) { color: inherit; }

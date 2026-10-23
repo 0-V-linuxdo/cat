@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Split</title>
+  <style>
+    html, body { margin: 0; height: 100%; font: 13px system-ui, sans-serif; background: #1e1e24; }
+    /* 深色：同侧栏判定（sidepanel.css：系统深色且未强制浅色，或 data-theme="dark"）。底色 = Helium 默认灰阶深色 kColorSysHeader→kColorRefNeutral12（chromium ui/color/sys_color_mixer.cc:88；helium-chromium patches/helium/ui/helium-color-scheme.patch:132） */
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]), :root:not([data-theme="light"]) body { background: #1E2020; } }
+    :root[data-theme="dark"], :root[data-theme="dark"] body { background: #1E2020; }
+    #split { display: flex; height: 100%; gap: 6px; padding: 6px; box-sizing: border-box; }
+    .split-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-radius: 8px; overflow: hidden; background: var(--sv-pane, #fff); } /* 主题变量来自 splitView/style.ts；脚本加载前回退浅 #fff，深色见下行 */
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .split-pane { background: var(--sv-pane, #1E2020); } }
+    :root[data-theme="dark"] .split-pane, :root[data-bb-dark="1"] .split-pane { background: var(--sv-pane, #1E2020); }
+    .split-bar { display: flex; gap: 4px; padding: 4px; background: #2a2a33; }
+    .split-url { flex: 1; min-width: 0; border: 0; border-radius: 4px; padding: 3px 6px; background: #3a3a45; color: #eee; }
+    .split-bar button { border: 0; background: transparent; color: #ccc; cursor: pointer; }
+    iframe { flex: 1; border: 0; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="split"></div>
+  <script src="page.js"></script>
+</body>
+</html>

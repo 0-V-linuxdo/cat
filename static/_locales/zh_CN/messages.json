@@ -1,0 +1,23 @@
+{
+  "extName": {
+    "message": "Cat"
+  },
+  "extShortName": {
+    "message": "Cat"
+  },
+  "extDescription": {
+    "message": "Arc 风格的纵向侧边栏。"
+  },
+  "actionTitle": {
+    "message": "打开 Cat"
+  },
+  "cmdOpenSidebar": {
+    "message": "打开侧边栏"
+  },
+  "cmdOpenCommandBar": {
+    "message": "打开命令栏（新标签）"
+  },
+  "cmdToggleSidebar": {
+    "message": "显示 / 隐藏侧边栏"
+  }
+}

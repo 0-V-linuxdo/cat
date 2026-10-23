@@ -1,0 +1,23 @@
+{
+  "extName": {
+    "message": "Cat"
+  },
+  "extShortName": {
+    "message": "Cat"
+  },
+  "extDescription": {
+    "message": "An Arc-style vertical sidebar."
+  },
+  "actionTitle": {
+    "message": "Open Cat"
+  },
+  "cmdOpenSidebar": {
+    "message": "Open sidebar"
+  },
+  "cmdOpenCommandBar": {
+    "message": "Open command bar (new tab)"
+  },
+  "cmdToggleSidebar": {
+    "message": "Show / hide sidebar"
+  }
+}

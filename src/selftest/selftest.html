@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Cat 自检</title>
+<style>
+body{font:13px -apple-system,system-ui,sans-serif;background:#1e1e2e;color:#cdd6f4;margin:0;display:flex;height:100vh}
+#left{flex:1;overflow:auto;padding:12px 16px}
+#panel{width:320px;border:0;border-left:1px solid #444;height:100vh;background:#181825}
+h1{font-size:16px;margin:0 0 8px}
+table{border-collapse:collapse;width:100%}
+td{border-bottom:1px solid #333;padding:3px 6px;vertical-align:top}
+td.n{white-space:nowrap;font-weight:600}
+td.d{font-size:11px;color:#a6adc8;word-break:break-all}
+.pass{color:#a6e3a1}.fail{color:#f38ba8}.skip{color:#f9e2af}
+#sum{font-size:15px;margin:6px 0 10px}
+</style></head>
+<body><div id="left"><h1>Cat 自检（验收用）</h1><div id="sum">运行中…</div><table id="t"></table></div>
+<iframe id="panel" src="sidepanel.html"></iframe>
+<script src="selftest.js"></script></body></html>

@@ -1,0 +1,176 @@
+/*
+ * 完整设置页。版式参考 Anthropic 的 Figma 社区套件 “MCP Apps for Claude”（公开页只有封面，细节为推断）：
+ * 暖中性底色、白色 / 深灰卡片 + 1px 发丝边、12px 圆角、标题 + 次要说明的两行设置行、右对齐的统一宽度控件、
+ * 分组小标题、子设置缩进。无渐变、无光晕。只在本文件里定义设置页专用令牌（--opt-*），其余沿用核心 --arc-* 令牌。
+ */
+body.arc-options {
+  --opt-bg: #f8f7f4; --opt-side: #f1f0ec; --opt-card: #ffffff; --opt-line: rgb(20 20 19 / .09); --opt-line-strong: rgb(20 20 19 / .14);
+  --opt-fg: #1a1a18; --opt-muted: #6b6a65; --opt-faint: #9a9891; --opt-hover: rgb(20 20 19 / .045); --opt-sel: rgb(20 20 19 / .07);
+  --opt-field: #ffffff; --opt-on: #2c84db; --opt-off: rgb(20 20 19 / .16); --opt-focus: rgb(44 132 219 / .35);
+  --opt-control-w: 200px; --opt-row-pad: 14px 16px; --opt-r: 12px;
+  --opt-shadow: 0 1px 2px rgb(20 20 19 / .04);
+  --arc-disabled-text: #ababab; /* Arc MenuDisabledText（arc-colors-all.tsv:30 / :37，menus-spec.md:50） */
+  overflow: hidden; user-select: text; background: var(--opt-bg); color: var(--opt-fg); font-size: 13px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) body.arc-options {
+  --opt-bg: #1f1e1d; --opt-side: #1a1918; --opt-card: #262624; --opt-line: rgb(255 255 255 / .08); --opt-line-strong: rgb(255 255 255 / .13);
+  --opt-fg: #f5f4ef; --opt-muted: #a6a39b; --opt-faint: #85837c; --opt-hover: rgb(255 255 255 / .05); --opt-sel: rgb(255 255 255 / .08);
+  --opt-field: #30302e; --opt-on: #4a9be6; --opt-off: rgb(255 255 255 / .18); --opt-focus: rgb(74 155 230 / .4);
+  --opt-shadow: 0 1px 2px rgb(0 0 0 / .25);
+  --arc-disabled-text: #797881;
+} }
+:root[data-theme="light"] body.arc-options { color-scheme: light; }
+:root[data-theme="dark"] body.arc-options { color-scheme: dark;
+  --opt-bg: #1f1e1d; --opt-side: #1a1918; --opt-card: #262624; --opt-line: rgb(255 255 255 / .08); --opt-line-strong: rgb(255 255 255 / .13);
+  --opt-fg: #f5f4ef; --opt-muted: #a6a39b; --opt-faint: #85837c; --opt-hover: rgb(255 255 255 / .05); --opt-sel: rgb(255 255 255 / .08);
+  --opt-field: #30302e; --opt-on: #4a9be6; --opt-off: rgb(255 255 255 / .18); --opt-focus: rgb(74 155 230 / .4);
+  --opt-shadow: 0 1px 2px rgb(0 0 0 / .25);
+  --arc-disabled-text: #797881;
+}
+body.arc-options #app { flex-direction: row; gap: 0; padding: 0; height: 100vh; background: none; }
+body.arc-options :focus-visible { outline: 2px solid var(--opt-focus); outline-offset: 1px; }
+
+/* —— 侧栏导航 —— */
+.arc-opt-side { width: 232px; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 16px 12px; overflow: auto; background: var(--opt-side); border-right: 1px solid var(--opt-line); }
+.arc-opt-search { background: var(--opt-field); color: var(--opt-fg); border: 0; box-shadow: inset 0 0 0 1px var(--opt-line); height: 32px; padding: 0 10px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
+.arc-opt-search:focus { box-shadow: inset 0 0 0 1px var(--opt-on), 0 0 0 3px var(--opt-focus); outline: none; }
+.arc-opt-search:placeholder-shown::-webkit-search-cancel-button { display: none; } /* 同 52141：空时 type=search 清除按钮仍占 ~13px，截断占位文字；输入后照常显示 */
+.arc-opt-nav { display: flex; flex-direction: column; gap: 2px; }
+.arc-opt-nav-title { color: var(--opt-faint); font-size: 11.5px; font-weight: 500; padding: 10px 10px 6px; }
+.arc-opt-nav-item { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--opt-fg); text-align: left; cursor: default; font-size: 13px; }
+.arc-opt-nav-item .arc-svg { color: var(--opt-muted); flex: none; }
+.arc-opt-nav-item:hover { background: var(--opt-hover); }
+.arc-opt-nav-item.active { background: var(--opt-sel); font-weight: 500; }
+.arc-opt-nav-item.active .arc-svg { color: var(--opt-fg); }
+.arc-opt-nav-item.off .arc-opt-nav-label, .arc-opt-nav-item.off .arc-svg { color: var(--opt-faint); }
+.arc-opt-nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arc-opt-data { margin-top: auto; display: flex; flex-direction: column; gap: 2px; padding-top: 12px; }
+.arc-opt-data + .arc-opt-data { margin-top: 8px; border-top: 1px solid var(--opt-line); }
+.arc-options .arc-opt-general .arc-plugin-settings { padding: 0 4px; margin: 0; }
+.arc-options .arc-opt-general .arc-setting { flex-direction: column; align-items: stretch; gap: 6px; padding: 4px 6px; }
+.arc-options .arc-opt-general .arc-setting-title { font-size: 12px; color: var(--opt-muted); font-weight: 400; }
+.arc-options .arc-opt-general .arc-setting-control, .arc-opt-general .arc-setting-control > * { width: 100%; }
+
+/* —— 主区：页头 + 每个插件一节 —— */
+.arc-opt-main { flex: 1; min-width: 0; overflow: auto; }
+.arc-opt-page { max-width: 720px; margin: 0 auto; padding: 40px 40px 64px; }
+.arc-opt-page h1 { margin: 0 0 6px; font-size: 22px; font-weight: 600; letter-spacing: -.015em; line-height: 1.25; }
+.arc-opt-lead { margin: 0 0 28px; color: var(--opt-muted); font-size: 14px; line-height: 1.5; }
+.arc-opt-stack { display: flex; flex-direction: column; gap: 28px; }
+.arc-opt-plugin { display: flex; flex-direction: column; gap: 10px; }
+.arc-opt-row-main { display: flex; align-items: center; gap: 12px; padding: 0 4px; }
+.arc-opt-row-text { flex: 1; min-width: 0; }
+.arc-opt-row-title { font-size: 15px; font-weight: 600; letter-spacing: -.005em; display: flex; align-items: center; gap: 8px; }
+.arc-opt-row-sub { color: var(--opt-muted); font-size: 13px; line-height: 1.5; margin-top: 3px; }
+.arc-opt-plugin.off .arc-opt-row-title { color: var(--opt-muted); }
+.arc-opt-card { background: var(--opt-card); border-radius: var(--opt-r); box-shadow: inset 0 0 0 1px var(--opt-line), var(--opt-shadow); overflow: hidden; }
+.arc-opt-row-actions { display: flex; justify-content: flex-end; padding: 0 4px; }
+.arc-opt-row .arc-star { flex: none; color: var(--opt-faint); }
+.arc-opt-row .arc-star.on { color: var(--opt-fg); }
+.arc-opt-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 36px; color: var(--opt-faint); font-size: 12px; }
+
+/* —— 设置行：标题 + 说明 | 控件 —— */
+.arc-options .arc-plugin-settings { display: flex; flex-direction: column; gap: 0; margin: 0; }
+.arc-options .arc-setting-group + .arc-setting-group { border-top: 1px solid var(--opt-line); }
+.arc-options .arc-setting-caption { padding: 12px 16px 2px; font-size: 11.5px; font-weight: 500; color: var(--opt-faint); }
+.arc-options .arc-setting { display: flex; align-items: center; gap: 16px; padding: var(--opt-row-pad); font-size: 13px; color: var(--opt-fg); }
+.arc-options .arc-setting + .arc-setting { border-top: 1px solid var(--opt-line); }
+.arc-options .arc-setting-caption + .arc-setting { border-top: 0; }
+.arc-options .arc-setting-sub { padding-left: 36px; position: relative; }
+.arc-options .arc-setting-sub::before { content: ""; position: absolute; left: 22px; top: 0; bottom: 0; width: 1px; background: var(--opt-line-strong); }
+.arc-options .arc-setting.is-disabled :is(.arc-setting-title, .arc-setting-desc, .arc-svg) { color: var(--arc-disabled-text); }
+.arc-options .arc-setting[data-kind="area"] { flex-direction: column; align-items: stretch; gap: 8px; }
+.arc-setting-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.arc-options .arc-setting-title { font-weight: 500; line-height: 1.4; }
+.arc-options .arc-setting-desc { color: var(--opt-muted); font-size: 12.5px; line-height: 1.45; }
+.arc-setting-control { flex: none; display: inline-flex; justify-content: flex-end; }
+.arc-options .arc-setting[data-kind="field"] .arc-setting-control, .arc-options .arc-setting[data-kind="slider"] .arc-setting-control { width: var(--opt-control-w); }
+.arc-options .arc-setting[data-kind="field"] .arc-setting-control > * { width: 100%; }
+.arc-options .arc-setting[data-kind="area"] .arc-setting-control, .arc-options .arc-setting[data-kind="area"] textarea { width: 100%; }
+
+/* —— 控件 —— */
+.arc-options .arc-field, .arc-options .arc-dropdown > button, .arc-options .arc-select {
+  font: inherit; font-size: 13px; color: var(--opt-fg); background: var(--opt-field); border: 0; height: 32px; padding: 0 10px; border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--opt-line-strong); outline: none; min-width: 0;
+}
+.arc-options textarea.arc-field { height: auto; min-height: 72px; padding: 8px 10px; resize: vertical; }
+.arc-options .arc-field:focus { box-shadow: inset 0 0 0 1px var(--opt-on), 0 0 0 3px var(--opt-focus); }
+.arc-options .arc-field:disabled { color: var(--arc-disabled-text); cursor: default; }
+.arc-options .arc-slider { display: inline-flex; align-items: center; gap: 10px; width: 100%; }
+.arc-options .arc-slider input { flex: 1; accent-color: var(--opt-on); }
+.arc-options .arc-slider-value { min-width: 2.5em; text-align: right; color: var(--opt-muted); font-variant-numeric: tabular-nums; }
+
+.arc-toggle { position: relative; flex: none; width: 36px; height: 20px; }
+.arc-toggle input { position: absolute; inset: 0; opacity: 0; margin: 0; }
+.arc-toggle-track, .arc-options input.arc-switch { border-radius: 999px; background: var(--opt-off); transition: background var(--arc-t) var(--arc-ease); }
+.arc-toggle-track { position: absolute; inset: 0; pointer-events: none; }
+.arc-toggle-track::after, .arc-options input.arc-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / .2); transition: transform var(--arc-t) var(--arc-ease); }
+.arc-toggle input:checked + .arc-toggle-track, .arc-options input.arc-switch:checked { background: var(--opt-on); }
+.arc-toggle input:checked + .arc-toggle-track::after, .arc-options input.arc-switch:checked::after { transform: translateX(16px); }
+.arc-toggle.locked { opacity: .45; }
+.arc-toggle input:focus-visible + .arc-toggle-track { outline: 2px solid var(--opt-focus); outline-offset: 2px; }
+.arc-options input.arc-switch { appearance: none; position: relative; flex: none; width: 36px; height: 20px; margin: 0; }
+.arc-options input.arc-switch:disabled { cursor: default; filter: saturate(0); }
+.arc-options .arc-btn { font-size: 12.5px; height: 30px; padding: 0 12px; border-radius: 8px; background: var(--opt-field); color: var(--opt-fg); box-shadow: inset 0 0 0 1px var(--opt-line-strong); border: 0; }
+.arc-options .arc-btn-quiet { background: transparent; box-shadow: none; color: var(--opt-muted); }
+.arc-options .arc-btn-quiet:hover { background: var(--opt-hover); color: var(--opt-fg); }
+.arc-options .arc-hint { color: var(--opt-muted); padding: 24px; text-align: center; border: 1px dashed var(--opt-line-strong); border-radius: var(--opt-r); }
+@media (max-width: 760px) { .arc-opt-side { width: 196px; } .arc-opt-page { padding: 24px; } body.arc-options { --opt-control-w: 160px; } }
+.arc-options .arc-opt-general .arc-setting-text { align-items: flex-start; text-align: left; }
+.arc-setting[hidden] { display: none !important; }
+
+/* —— Void++ 结构（PluginsTab / PluginCard / PluginDialog）：筛选条、两列卡片、必需卡片变淡、配置对话框、重载提示 —— */
+.arc-opt-side { gap: 2px; }
+.arc-opt-nav { flex: 1; }
+.arc-opt-nav-spacer { flex: 1; min-height: 16px; }
+.arc-opt-page h1 { display: flex; align-items: center; gap: 8px; }
+.arc-opt-filterbar { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; }
+.arc-opt-filterbar .arc-opt-search { flex: 1; margin: 0; }
+.arc-opt-filterbar .arc-dropdown { width: 140px; flex: none; }
+.arc-opt-list { display: flex; flex-direction: column; gap: 16px; }
+.arc-opt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.arc-opt-sep { border: 0; height: 1px; background: var(--opt-line); margin: 0; }
+.arc-vcard { display: flex; flex-direction: column; min-height: 120px; min-width: 0; border-radius: 8px; border: 1px solid var(--opt-line); background: var(--opt-card); box-shadow: var(--opt-shadow); overflow: hidden; }
+.arc-vcard-body { flex: 1; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; }
+.arc-vcard-head { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+.arc-vcard-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.arc-vcard-title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arc-vcard-req { display: inline-flex; color: var(--opt-faint); font-size: 11px; font-weight: 500; }
+.arc-vcard-controls { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.arc-vcard-cfg { color: var(--opt-faint); }
+.arc-vcard-cfg:hover { color: var(--opt-fg); }
+.arc-vcard-desc { margin-top: 4px; font-size: 13px; line-height: 1.5; color: var(--opt-muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.arc-vcard-foot { border-top: 1px solid var(--opt-line); padding: 6px 12px; font-size: 11px; color: var(--opt-faint); line-height: 1.45; }
+/* 必需插件始终启用、状态正常：不再整体变淡（看起来像禁用 / 出错）*/
+.arc-vcard.off .arc-vcard-title { color: var(--opt-muted); }
+.arc-opt-actions { display: flex; flex-direction: column; margin-bottom: 20px; }
+.arc-opt-action { display: flex; align-items: center; gap: 16px; padding: 12px 16px; }
+.arc-opt-action + .arc-opt-action { border-top: 1px solid var(--opt-line); }
+.arc-opt-reload { display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin-bottom: 20px; border-radius: 8px; font-size: 12.5px;
+  color: var(--opt-fg); background: color-mix(in srgb, #d9a400 12%, var(--opt-card)); border: 1px solid color-mix(in srgb, #d9a400 40%, transparent); }
+.arc-opt-reload span { flex: 1; }
+.arc-vdialog-scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgb(0 0 0 / .28); }
+.arc-vdialog { width: min(560px, calc(100vw - 48px)); max-height: calc(100vh - 80px); display: flex; flex-direction: column; gap: 14px; padding: 18px 20px; border-radius: 12px;
+  background: var(--opt-card); color: var(--opt-fg); border: 1px solid var(--opt-line-strong); box-shadow: 0 1px 0 rgb(255 255 255 / .04) inset, 0 16px 40px rgb(0 0 0 / .22); }
+.arc-vdialog-head { display: flex; align-items: flex-start; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--opt-line); }
+.arc-vdialog-head > div { flex: 1; min-width: 0; }
+.arc-vdialog-title { font-size: 16px; font-weight: 600; }
+.arc-vdialog-sub { color: var(--opt-muted); font-size: 13px; line-height: 1.5; margin-top: 2px; }
+.arc-vdialog-field { display: flex; flex-direction: column; gap: 6px; }
+.arc-vdialog-label { font-size: 11.5px; font-weight: 500; color: var(--opt-faint); }
+.arc-vdialog-settings { min-height: 0; overflow: auto; }
+.arc-vdialog-settings .arc-plugin-settings { margin: 0; }
+.arc-vdialog-foot { display: flex; justify-content: flex-end; }
+.arc-opt-pagehead { display: flex; align-items: center; gap: 12px; }
+.arc-opt-pagehead h1 { flex: 1; }
+.arc-vcard-icon { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; flex: none; color: var(--opt-fg); background: var(--opt-sel); }
+.arc-vdialog-settings .arc-setting-group + .arc-setting-group { border-top: 1px solid var(--opt-line); padding-top: 8px; margin-top: 4px; }
+.arc-vdialog-settings .arc-setting-caption { font-weight: 600; color: var(--opt-fg); font-size: 12.5px; }
+
+/* 点击后不留焦点环：只给键盘焦点（:focus-visible）画环（验收 accept-live-0.1.0.51947） */
+button:focus:not(:focus-visible), [role="button"]:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible), summary:focus:not(:focus-visible) { outline: none; box-shadow: none; }
+
+/* 焦点环：只在键盘导航（<html data-kbd-nav>，见 @api/FocusPolicy）时画；鼠标、快捷键（⌘T）、程序化 focus、菜单关闭归还焦点都不画 */
+:root:not([data-kbd-nav]) :is(button, a, summary, [role="button"], [role="menuitem"], [role="tab"], [tabindex]):is(:focus, :focus-visible) { outline: none !important; }
+:root:not([data-kbd-nav]) .arc-icon-btn:is(:focus, :focus-visible):not(:hover):not(:active) { box-shadow: none !important; }
+:root[data-kbd-nav] :is(button, a, summary, [role="button"], [role="menuitem"], [role="tab"]):focus { outline: 2px solid color-mix(in srgb, var(--arc-accent, #3b6cf6) 70%, transparent); outline-offset: 1px; } /* 键盘导航时才画环 */
