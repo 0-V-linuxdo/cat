@@ -4,6 +4,8 @@ export const STRINGS = {
     en: {
         "plugin.tidyTabTitles.label": "Tidy Tab Titles",
         "plugin.tidyTabTitles.desc": "Shorter titles for tabs you pin",
+        "tidyTabTitles.tag.shorten": "Shorten Pinned Titles",
+        "tidyTabTitles.tag.reset": "Reset Name and Icon",
         "tidyTabTitles.endpoint": "API endpoint (OpenAI-compatible)",
         "tidyTabTitles.model": "Model",
         "tidyTabTitles.apiKey": "API key (stored locally in plain text)",
@@ -13,6 +15,8 @@ export const STRINGS = {
     zh: {
         "plugin.tidyTabTitles.label": "整理标签标题",
         "plugin.tidyTabTitles.desc": "固定标签时自动改成短标题",
+        "tidyTabTitles.tag.shorten": "缩短固定标签标题",
+        "tidyTabTitles.tag.reset": "重置名称和图标",
         "tidyTabTitles.endpoint": "接口地址（OpenAI 兼容）",
         "tidyTabTitles.model": "模型",
         "tidyTabTitles.apiKey": "API key（明文存在本地）",

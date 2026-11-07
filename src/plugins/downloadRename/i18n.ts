@@ -4,6 +4,9 @@ export const STRINGS = {
     en: {
         "plugin.downloadRename.label": "Tidy Downloads",
         "plugin.downloadRename.desc": "Rename downloads to be concise and readable",
+        "downloadRename.tag.rename": "Rename",
+        "downloadRename.tag.ai": "AI Naming",
+        "downloadRename.tag.revert": "Revert Name",
         "downloadRename.useModel": "Use an AI model",
         "downloadRename.endpoint": "API endpoint (OpenAI-compatible)",
         "downloadRename.model": "Model",
@@ -21,6 +24,9 @@ export const STRINGS = {
     zh: {
         "plugin.downloadRename.label": "整理下载",
         "plugin.downloadRename.desc": "把下载文件重命名得简洁易读",
+        "downloadRename.tag.rename": "重命名",
+        "downloadRename.tag.ai": "AI 命名",
+        "downloadRename.tag.revert": "恢复原名",
         "downloadRename.useModel": "使用 AI 模型",
         "downloadRename.endpoint": "接口地址（OpenAI 兼容）",
         "downloadRename.model": "模型",

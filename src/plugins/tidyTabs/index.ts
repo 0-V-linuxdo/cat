@@ -12,7 +12,7 @@ import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
 
 import { chatJson, getApiKey } from "../_shared/llm";
-import { BUTTON_ICON, MIN_TABS, PROMPT_BODY } from "./constants";
+import { MIN_TABS, PROMPT_BODY } from "./constants";
 import { coreReady, createTodayGroups, getTodayTabs, removeTodayGroups, toastWithAction } from "./coreHooks";
 import "./i18n";
 import { buildPrompt, parseAssignments, planGroups, buttonEnabled, buttonVisible } from "./logic";
@@ -56,10 +56,10 @@ async function tidy(): Promise<void> {
 export default definePlugin({
     name: "TidyTabs",
     label: "plugin.tidyTabs.label",
-    icon: BUTTON_ICON,
     description: "plugin.tidyTabs.desc",
     authors: [Devs.ArcSidebar],
     tags: ["tabs"],
+    featureTags: ["tidyTabs.tag.group", "tidyTabs.tag.undo"],
     commands: [{ id: "tidyTabs.run", label: "tidyTabs.cmd", context: "panel", run: tidy }],
     panel: {
         start() {

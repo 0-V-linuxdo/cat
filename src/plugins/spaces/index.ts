@@ -14,7 +14,6 @@ const features = [SpaceManager, Themes, Favorites];
 export default definePlugin({
     name: "Spaces",
     label: "plugin.spaces.label",
-    icon: "spaces",
     description: "plugin.spaces.desc",
     authors: [Devs.ArcSidebar],
     tags: ["spaces"],

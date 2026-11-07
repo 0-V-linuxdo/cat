@@ -17,11 +17,12 @@ import { isPluginEnabled } from "@api/PluginManager";
 import { call } from "@api/RPC";
 import { recordStoreUndo } from "@api/Undo";
 import { type MenuEntry, openMenu } from "@components/Menu";
+import { inDriftIconZone } from "@components/TabRow";
 import { getTab } from "@plugins/_core/tabState";
 import { muteTabs } from "@plugins/library/media";
 import { muteItemOf, muteMenuState } from "@plugins/library/media/muteMenu";
 import { addFavorite, favStore } from "@plugins/spaces/favorites";
-import { duplicatePin, handleDrop, mutateSpace, pinTab } from "@plugins/tabs/pinnedTabs";
+import { duplicatePin, handleDrop, mutateSpace, pinTab, removePinsKeepOpen } from "@plugins/tabs/pinnedTabs";
 import { detach, type PinNode, pinnedStore, walk } from "@plugins/tabs/pinnedTabs/model";
 import { activeSpace, spacesStore } from "@plugins/spaces/spaceManager/store";
 import { Devs } from "@utils/constants";
@@ -84,14 +85,11 @@ export const actions = {
         await handleDrop(encodeMulti(keys), { into: id });
         clearSelection();
     },
-    /** Remove Pins：移除固定项并关掉其标签（同单项 Remove Pin） */
+    /** Remove Pins：移除固定项，打开着的标签保持打开、回到 Today 顶部（同单项 Remove Pin，rel65 ①：pinnedTabs.removePinsKeepOpen） */
     async removePins() {
         const { pins } = resolved();
         if (!pins.length) return;
-        recordStoreUndo(tr("pinned.removePins"), pinnedStore);
-        const open = pins.flatMap(p => (p.tabId != null && getTab(p.tabId) ? [p.tabId] : []));
-        await mutateSpace(list => { for (const p of pins) detach(list, p.id); });
-        if (open.length) await chrome.tabs.remove(open).catch(() => { /* 标签已关 */ });
+        await removePinsKeepOpen(pins.map(p => p.id), tr("pinned.removePins"));
         clearSelection();
     },
     /** Archive Tabs（混选）：今日标签关闭进归档；固定项一并移出固定区并关掉标签 */
@@ -131,7 +129,7 @@ export const actions = {
     },
     async copyLinks() {
         const { tabIds, pins } = resolved();
-        const urls = [...tabIds.map(id => getTab(id)?.url), ...pins.map(n => getTab(n.tabId)?.url ?? n.url)].filter(Boolean);
+        const urls = [...tabIds.map(id => getTab(id)?.url), ...pins.map(n => getTab(n.tabId)?.url || n.url)].filter(Boolean);
         await copyText(urls.map(u => applyUrlTransforms("copy", u ?? "")).join("\n"));
         toast(tr("multi.copiedN", urls.length));
     },
@@ -177,6 +175,8 @@ function panelStart() {
         const row = target.closest<HTMLElement>(".arc-tab[data-sel]");
         if (!row) { if (!target.closest("button, input, a, .arc-folder-head")) clearSelection(); return; }
         if (target.closest(".arc-tab-close")) return;
+        // rel47 ⑦：偏离固定行的图标区 ⌘ 单击 = “分离当前页”（pinned-icon-hover.md：只有 region0 发 action，Bool = ⌘ 位），不是 ⌘ 多选切换 → 放行给 TabRow 的图标点击
+        if (e.metaKey && !e.shiftKey && inDriftIconZone(row, e)) return;
         const mode = e.shiftKey ? "range" : e.metaKey || e.ctrlKey ? "toggle" : null;
         if (!mode) { setSel(new Set([row.dataset.sel!]), row.dataset.sel!); return; }
         e.preventDefault();

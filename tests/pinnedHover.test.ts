@@ -16,13 +16,24 @@ test("左图标：没有 tooltip（不再有 pinned.reset 的 data-tip），没�
     expect(row).not.toMatch(/"title"\s*:|\btitle=|setAttribute\("title"/);
     expect(row).toContain("if (p.drifted && p.onIconClick) {"); // 只有偏离固定网址的行才建副标题（普通行没有 .arc-tab-sub）
     expect(row.split('class: "arc-tab-sub"').length - 1).toBe(1);
-    expect(row).toContain('tr("pinned.backToUrl")');
+    expect(row).toContain('"pinned.backToUrl"'); // rel47：经 hoverSubText()（按 ⌘ 在 backToUrl / separate 间切换）
+    expect(row).toContain("hoverSubText());");
     expect(en).toContain('"pinned.backToUrl": "Back to Pinned URL"');
     expect(zh).toMatch(/"pinned\.backToUrl": "[^"]+"/);
 });
+test("⌘：图标区悬停按住 Command → 第二行 Separate From Pinned Tab（rel47，pinned-icon-hover.md 结论 1，bit3 = command）；实时切换", () => {
+    expect(row).toContain('tr(metaDown ? "pinned.separate" : "pinned.backToUrl")');
+    expect(row).toContain('window.addEventListener("keydown", e => sync(e.metaKey), true)');
+    expect(row).toContain('window.addEventListener("keyup", e => sync(e.metaKey), true)');
+    expect(row).toContain('.arc-tab[data-hz="icon"] > .arc-tab-sub'); // 只改图标区悬停中的第二行（⌘ 只在图标区有效）
+    expect(row).toContain("applyMeta(); // morph"); // 整屏重绘后补回
+    expect(row).not.toContain("e.altKey"); // 不是 Option
+    expect(en).toContain('"pinned.separate": "Separate From Pinned Tab"');
+    expect(zh).toMatch(/"pinned\.separate": "[^"]+"/);
+});
 test("左图标副标题：只在图标区（行左缘 → 斜杠左缘）；不是整行；hover 整行不触发", () => {
     expect(row).toContain("e.clientX < r.left"); // r = 斜杠的 rect
-    expect(row).toContain('row.setAttribute("data-hz", "icon")');
+    expect(row).toContain('rw.setAttribute("data-hz", "icon")'); // rw = e.currentTarget（pinned-icon-hover：不能用渲染时闭包里的 row）
     expect(css + tabsCss).not.toMatch(/\.arc-tab:hover[^{]*\.arc-tab-sub/); // 副标题不挂在整行 :hover 上
 });
 test("左图标 hover 样式：标题平移 7（只在 data-hz）、副标题 0.1s easeInEaseOut 淡入、右按钮隐藏、单行尾截断；P-01 的 translateX(7px) 已删", () => {
@@ -32,11 +43,12 @@ test("左图标 hover 样式：标题平移 7（只在 data-hz）、副标题 0.
     expect(tabsCss).toMatch(/\.arc-tab-sub \{[^}]*opacity: 0; transition: opacity \.1s ease-in-out;/);
     expect(tabsCss).toMatch(/\.arc-tab-sub \{[^}]*white-space: nowrap; overflow: hidden; text-overflow: ellipsis;/);
     expect(tabsCss).toContain(':root .arc-tab[data-hz="icon"] > .arc-tab-sub { opacity: 1; }');
-    expect(tabsCss).toContain(':root .arc-tab[data-hz="icon"] .arc-tab-close { opacity: 0; pointer-events: none; }');
+    expect(tabsCss).toContain(':root .arc-tab[data-hz="icon"] .arc-tab-close { opacity: 0; pointer-events: none; display: none; }'); // rel47 ⑤：不占位
 });
-test("斜杠版面：图标 → 斜杠 0、斜杠 → 标题 4；hover 只改 alpha", () => {
+test("斜杠版面：图标 → 斜杠 0、斜杠 → 标题 4；图标区 hover 只改 alpha", () => {
     expect(css).toContain("margin: 0 calc(4px - var(--arc-gap, 6px)) 0 calc(-1 * var(--arc-gap, 6px))");
-    expect(css).toContain(".arc-tab:hover .arc-drift { opacity: 0; }");
+    expect(css).toContain('.arc-tab[data-hz="icon"] .arc-drift { opacity: 0; }');
+    expect(css).not.toContain(".arc-tab:hover .arc-drift"); // rel46：整行悬停不再隐藏「/」
     expect(row).toContain("p.drifted ? driftSlash() : null"); // 不偏离 → 没有占位
 });
 
@@ -144,4 +156,63 @@ test("copyTip：属性已被消费也能把 tip 复制到替换节点；EmptyFav
 test("行 hover 背景：浅 #0E0F10 α.10 / 深 #FAFBFF α.15（已与 Rea N1 一致）", () => {
     expect(css).toContain("--arc-hover: rgb(14 15 16 / .10)");
     expect(css).toContain("--arc-hover: rgb(250 251 255 / .15)");
+});
+test("图标区 region0 高亮块（rel47，pinned-icon-hover.md 结论 5）：宽 36 / 圆角 12 / 色值 / 当前行左圆右直；只在 data-hz=icon（偏离行图标区）", () => {
+    expect(tabsCss).toContain(':root .arc-tab[data-hz="icon"]::before { content: ""; position: absolute; z-index: -1; left: 0; top: 0; bottom: 0; width: 36px; border-radius: 12px; background: var(--arc-hz-bg); pointer-events: none; }');
+    expect(tabsCss).toContain(":root { --arc-hz-bg: rgb(14 15 16 / .05); --arc-hz-press: rgb(14 15 16 / .065); }");
+    expect(tabsCss).toContain(':root[data-theme="dark"] { --arc-hz-bg: rgb(250 251 255 / .10); --arc-hz-press: rgb(250 251 255 / .065); }');
+    expect(tabsCss).toContain("@media (prefers-color-scheme: dark) { :root:not([data-theme=\"light\"]) { --arc-hz-bg: rgb(250 251 255 / .10)");
+    expect(tabsCss).toContain(':root .arc-tab[data-hz="icon"]:active::before { background: var(--arc-hz-press); }');
+    expect(tabsCss).toContain('border-radius: 12px 0 0 12px; }'); // cornerMask 5
+    expect(tabsCss).toContain("宽 36 ⚠ 推导值"); // 标注
+});
+test("rel47 ④⑤⑥：第一行尾部省略号（无渐隐 mask）；第二行右界到行最右（不再 --arc-sub-width）；第二行色 = 行文字色 × 0.5", () => {
+    const sp = css;
+    expect(sp).toMatch(/\.arc-tab-title \{[^}]*text-overflow: ellipsis;[^}]*\}/);
+    expect(sp.match(/\.arc-tab-title \{[^}]*\}/)![0]).not.toMatch(/mask|text-overflow: clip/);
+    expect(tabsCss).toMatch(/\.arc-tab-sub \{[^}]*left: var\(--arc-sub-left, 0\); right: 6px;/);
+    expect(tabsCss).not.toContain("var(--arc-sub-width");
+    expect(tabsCss).toContain("var(--arc-row-fg, currentColor) 50%, transparent)");
+    expect(tabsCss).not.toContain("var(--arc-row-fg, currentColor) 56%");
+});
+test("rel47 ⑦：⌘ 单击图标区 = separateCurrent（最小实现，reducer ⛔）；普通单击仍 resetNode；multiSelect 放行图标区 ⌘ 单击；选中状态不动（后台新开）", () => {
+    const pin = readFileSync("src/plugins/tabs/pinnedTabs/index.ts", "utf8");
+    const ms = readFileSync("src/plugins/tabs/multiSelect/index.ts", "utf8");
+    expect(pin).toContain("e => { if (e.metaKey) void separateCurrent(n.id); else resetNode(n.id); }");
+    expect(pin).toContain("按 shouldSeparateCurrent=true 语义的最小实现，reducer 源码未找到");
+    const fn = pin.slice(pin.indexOf("export async function separateCurrent"), pin.indexOf("/** 固定标签是否已偏离固定的网址"));
+    expect(fn).toContain("chrome.tabs.create({ url: n.url,"); expect(fn).toContain("active: false"); // 当前页保持选中
+    expect(fn).toContain("f.tabId = nt.id"); // 固定项改绑新标签，原标签不再被认领 → 普通标签
+    expect(fn).not.toContain("chrome.tabs.update"); expect(fn).not.toContain("resetNode"); // 当前页不被导航回固定网址
+    expect(fn).not.toContain("n.url ="); // 固定项保存的 URL 不改
+    expect(pin).not.toContain("e.metaKey || e.ctrlKey");
+    expect(ms).toContain("if (e.metaKey && !e.shiftKey && inDriftIconZone(row, e)) return;");
+    expect(row).toContain("export function inDriftIconZone(");
+    expect(row).toContain("inDriftIconZone(e.currentTarget as HTMLElement, e)");
+});
+
+test("rel48 ①：偏离行图标区悬停（无 ⌘）→ 图标换成保存网址的 _favicon；⌘ / 离开 / REHOVER 补回；customIcon 与未偏离行不换；不新增存储字段（推导数据源 ⚠）", () => {
+    const pin = readFileSync("src/plugins/tabs/pinnedTabs/index.ts", "utf8");
+    expect(pin).toContain("savedUrl: n.url,");
+    expect(row).toContain('const savedFav = p.drifted && p.onIconClick && !p.customIcon && p.savedUrl ? faviconUrl(p.savedUrl) : "";');
+    expect(row).toContain('"data-saved-fav": savedFav || null');
+    expect(row).toContain('const want = rw.hasAttribute("data-hz") && !metaDown');
+    expect(row).toContain("数据源是推导 ⚠"); // 注释标明
+    // 换图随 data-hz（set）、⌘（applyMeta）、REHOVER（其后调 applyMeta）同步
+    expect(row).toContain('rw.removeAttribute("data-hz"); rw.removeAttribute("data-tip-blocked"); syncIcon(rw);');
+    expect(row).toMatch(/applyMeta\(\) \{[^}]*data-saved-fav\][^}]*syncIcon\(r\)/s);
+    expect(row).toMatch(/REHOVER, e => \{[\s\S]*?applyMeta\(\);/);
+    // 无动画 / 缩放：换图只替换节点，没有 transition / scale
+    const fn = row.slice(row.indexOf("function syncIcon"), row.indexOf("function applyMeta"));
+    expect(fn).not.toMatch(/transition|animate|scale/);
+    // 不新增存储字段
+    const model = readFileSync("src/plugins/tabs/pinnedTabs/model.ts", "utf8");
+    expect(model).not.toMatch(/savedFav\w*\??:|favIconUrl\??:/); // 没有保存 favicon 的字段
+    expect(readFileSync("static/manifest.json", "utf8")).toContain('"favicon"'); // _favicon 权限已有，没加
+});
+
+test("rel48 ①：selftest 第 71 项的 REHOVER 模拟同样摘 data-fav-orig 并断言补回换图", () => {
+    const st = readFileSync("src/selftest/selftest.ts", "utf8");
+    expect(st).toContain('dr.removeAttribute("data-fav-orig");');
+    expect(st).toContain("ri.favSwap === true");
 });

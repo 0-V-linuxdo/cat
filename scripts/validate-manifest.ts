@@ -50,6 +50,24 @@ for (const [name, c] of cmds) for (const [plat, k] of Object.entries(c.suggested
     need(/Ctrl|Alt|Command|MacCtrl/.test(k), `命令 ${name}.${plat} 需要 Ctrl/Alt/Command`);
 }
 
+// web_accessible_resources（页内侧边栏补丁 01 引入）：必须恰好是这一条受限形态——只暴露 sidepanel.html（页内侧边栏的 iframe 要加载它），matches 只许 http:// 与 https:// 的 /* 通配。
+// 每多暴露一个资源 / 多放开一个来源，所有匹配网站都能探测到「装了本扩展」，所以：<all_urls>、其它资源、extension_ids、use_dynamic_url（P0 未证明安全 / 必要）、多条目一律报错；
+// 需要改动时先改这里并说明理由（共享文件，走集成线）。
+const WAR_RESOURCES = ["sidepanel.html"], WAR_MATCHES = ["http://*/*", "https://*/*"];
+const war = m.web_accessible_resources as { resources?: unknown; matches?: unknown; extension_ids?: unknown; use_dynamic_url?: unknown }[] | undefined;
+need(Array.isArray(war) && war.length === 1, "web_accessible_resources 必须恰好 1 条（页内侧边栏：只暴露 sidepanel.html）");
+if (Array.isArray(war)) for (const [i, e] of war.entries()) {
+    const res = Array.isArray(e.resources) ? e.resources : [], mt = Array.isArray(e.matches) ? e.matches : [];
+    need(res.length > 0 && res.every(r => typeof r === "string"), `web_accessible_resources[${i}].resources 必须是非空字符串数组`);
+    for (const r of res) need(WAR_RESOURCES.includes(r as string), `web_accessible_resources[${i}] 暴露了不允许的资源：${String(r)}（只允许 ${WAR_RESOURCES.join(", ")}）`);
+    need(res.length === WAR_RESOURCES.length && WAR_RESOURCES.every(r => res.includes(r)), `web_accessible_resources[${i}].resources 必须恰好是 ${JSON.stringify(WAR_RESOURCES)}`);
+    for (const x of mt) need(WAR_MATCHES.includes(x as string), `web_accessible_resources[${i}].matches 只允许 ${WAR_MATCHES.join(" / ")}：${String(x)}`);
+    need(mt.length === WAR_MATCHES.length && WAR_MATCHES.every(x => mt.includes(x)), `web_accessible_resources[${i}].matches 必须恰好是 ${JSON.stringify(WAR_MATCHES)}`);
+    need(e.extension_ids === undefined, `web_accessible_resources[${i}] 不应有 extension_ids`);
+    need(e.use_dynamic_url === undefined, `web_accessible_resources[${i}] 不应有 use_dynamic_url（P0 未证明安全 / 必要）`);
+    for (const r of res) need(existsSync(join(DIST, String(r))), `web_accessible_resources[${i}] 引用的文件不存在：${String(r)}`);
+}
+
 // 引用的 html 中的脚本存在
 for (const html of ["sidepanel.html", "split.html", "options.html"]) {
     const src = readFileSync(join(DIST, html), "utf-8");

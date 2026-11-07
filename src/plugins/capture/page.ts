@@ -3,10 +3,12 @@ import { arcTooltip } from "@components/ArcTooltip"; // closed shadow root：dat
 import { call } from "@api/RPC";
 import { safe } from "@api/ErrorLog"; // page.js（内容脚本上下文）可用：ErrorLog 只依赖 chrome.storage.local，内容脚本有权限
 import { tr } from "@api/i18n";
+import { appearanceMode, resolveDark, systemIsDark, watchAppearance } from "@api/Appearance";
 import { CURSOR } from "./cursor";
-import { atTop, captureFilename, FULL_PAGE_DELAY_MS, zoomPlan, CUSTOM_VISUALS as V, OVERLAY_BUBBLE, captureScale, cropRect, isClick, MENU, menuItems, moveSelection, portraitLayout, PORTRAIT, rectFromDrag, type CaptureAction, type Pt, type Rect } from "./logic";
+import { PAGE_Z_MAX } from "@utils/zLayers";
+import { atTop, captureFilename, FULL_PAGE_DELAY_MS, zoomPlan, CUSTOM_VISUALS as V, menuCss, OVERLAY_BUBBLE, captureScale, cropRect, isClick, menuItems, moveSelection, portraitLayout, PORTRAIT, rectFromDrag, type CaptureAction, type Pt, type Rect } from "./logic";
 
-const Z = "2147483647";
+const Z = String(PAGE_Z_MAX);
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 let active: (() => void) | null = null;
 
@@ -156,26 +158,14 @@ function finish(dataUrl: string | null, mode: Mode) {
 
 function showMenu(dataUrl: string, mode: Mode) {
     const { host, root } = shadowHost("cat-capture-menu");
-    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-    const C = dark ? MENU.dark : MENU.light;
     const created = new Date();
     const filename = captureFilename(created);
     let libraryId: number | string | null = null;
     let kb = -1;
 
     const style = document.createElement("style");
-    style.textContent = `
-        .back{position:fixed;inset:0;background:${V.backdrop};}
-        .wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;gap:24px;pointer-events:none;font:13px system-ui,-apple-system;}
-        .wrap>*{pointer-events:auto;}
-        img{max-width:min(60vw,900px);max-height:80vh;border-radius:${MENU.radius}px;box-shadow:${V.previewShadow};background:${dark ? "#151C30" : "#FFF"};}
-        .menu{width:${MENU.width}px;border-radius:${MENU.radius}px;background:${C.bg};color:${C.text};padding:6px 0;box-shadow:${V.menuShadow};}
-        .row{display:flex;align-items:center;height:${MENU.rowHeight}px;padding:0 ${MENU.textPadding}px;cursor:default;margin:0 6px;border-radius:${MENU.radius - 2}px;}
-        .row.toggle{color:${C.toggle};}
-        .row[aria-disabled=true]{color:#ABABAB;}
-        @media (prefers-color-scheme: dark){.row[aria-disabled=true]{color:#797881;}}
-        .row.sel{background:${C.selected};color:${C.selectedText};}
-        .div{height:1px;margin:4px 0;background:currentColor;opacity:.1;}`;
+    // 外观（Themes.mode）：auto 跟系统，light / dark 钉住；菜单开着时系统 / 设置变化只重写 <style> 文本（不重建 DOM、不重放动画）
+    style.textContent = menuCss(resolveDark(appearanceMode(), systemIsDark()));
     const back = Object.assign(document.createElement("div"), { className: "back" });
     const wrap = Object.assign(document.createElement("div"), { className: "wrap" });
     const preview = Object.assign(document.createElement("img"), { src: dataUrl, alt: "" });
@@ -183,7 +173,8 @@ function showMenu(dataUrl: string, mode: Mode) {
     wrap.append(preview, menu);
     root.append(style, back, wrap);
 
-    const close = () => { removeEventListener("keydown", onKey, true); host.remove(); };
+    const stopWatch = watchAppearance(sc => { style.textContent = menuCss(sc.dark); });
+    const close = () => { removeEventListener("keydown", onKey, true); stopWatch(); host.remove(); };
     const draw = () => {
         const items = menuItems({ savedToLibrary: libraryId != null });
         menu.replaceChildren();

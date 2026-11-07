@@ -17,6 +17,7 @@ import { folderGlyph } from "@api/icons";
 import { snapshotStores } from "@api/Undo";
 import { copyText } from "@api/Clipboard";
 import { h } from "@api/dom";
+import { folderOpening } from "@components/folderAnim";
 import { refresh } from "@api/Slots";
 import { uid } from "@utils/misc";
 import { showContextMenu } from "@api/PanelShell";
@@ -157,7 +158,7 @@ function renderFolder(n: PinNode, depth: number, children: (l: PinNode[], d: num
     arcTooltip(head, () => n.title ?? tr("plugin.folders.label"), { delay: 1.5, anchor: "cursor" });
     // 折叠时仍显示其中当前激活的标签（Arc）
     const shown = n.collapsed ? [...walk(n.children)].filter(c => c.kind === "tab" && getTab(c.tabId)?.active) : n.children ?? [];
-    return h("div", { class: "arc-folder", "data-collapsed": String(!!n.collapsed) }, head, h("div", { class: "arc-folder-body" }, children(shown, depth + 1)));
+    return h("div", { class: "arc-folder", "data-collapsed": String(!!n.collapsed) }, head, h("div", { class: folderOpening(n.id, !!n.collapsed) ? "arc-folder-body arc-folder-opening" : "arc-folder-body" }, children(shown, depth + 1)));
 }
 
 export default definePlugin({

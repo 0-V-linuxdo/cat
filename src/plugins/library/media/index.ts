@@ -9,6 +9,7 @@ import { h } from "@api/dom";
 import { icon } from "@api/icons";
 import "@components/ArcTooltip"; // data-tip 自动挂 ArcTooltip
 import { addSection, refresh } from "@api/Slots";
+import { parkClosed } from "@api/ParkLife";
 import { debounce } from "@utils/misc";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
@@ -17,6 +18,7 @@ import type { MenuItemDef } from "@api/ContextMenus";
 import { getTab } from "@plugins/_core/tabState";
 import "./i18n";
 import { muteItemOf, muteMenuState, muteTabs } from "./muteMenu";
+import { MEET_RE, removalMatters, updateMatters } from "./parkFilter";
 
 export { muteTabs } from "./muteMenu";
 import { camIcon, MEDIA_MARQUEE_DEFAULT, mediaFavSrc, mediaMarqueeAttr, micIcon, playIcon, volumeIcon } from "./state";
@@ -68,17 +70,27 @@ const probeMeet = (tabId: number) => safeExpected(chrome.scripting.executeScript
         const st = (re: RegExp) => { const b = btns.find(x => re.test(x.getAttribute("aria-label") ?? "")); return { can: !!b, on: b?.getAttribute("data-is-muted") === "false" }; };
         return { mic: st(/microphone|mic|麦克风/i), cam: st(/camera|摄像头/i) };
     } }).then(r => { const v = r[0]?.result; if (v) meetState.set(tabId, v); }), "scripting.executeScript(probeMeet)", "script");
-async function reload() {
+/** 补丁 inpage-parked-timers-stop：上一次实际下发给 refresh() 的内容签名（保守：整个 tab 对象 + 探测结果 + dismissed 都进签名，只会多刷、不会漏刷）。
+ *  18b：停放期间的重读（onlyIfChanged = parkClosed()）签名没变就不 refresh（不白白记「整屏要重绘」脏位，切回少一次整屏渲染）；未停放仍每次 refresh */
+let shownSig = "";
+const sigOf = () => JSON.stringify([media, meets, [...paused], [...meetState], [...dismissed]]);
+async function reload(onlyIfChanged = false) {
     const tabs = await chrome.tabs.query({});
-    meets = tabs.filter(t => /^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/.test(t.url ?? ""));
+    meets = tabs.filter(t => MEET_RE.test(t.url ?? ""));
     media = tabs.filter(t => t.audible && !t.mutedInfo?.muted && !dismissed.has(t.id!)); // 同 Arc：静音后从托盘消失（侧边栏行内的音频图标可取消静音）
     await Promise.all([...media.map(t => probePaused(t.id!)), ...meets.map(t => probeMeet(t.id!))]);
-    refresh();
+    const sig = sigOf(), same = sig === shownSig; shownSig = sig;
+    if (!(onlyIfChanged && same)) refresh();
 }
-const schedule = debounce(() => void reload(), 100);
+/** 补丁 inpage-parked-timers-stop-b：托盘里（媒体行 + Meet 行）的标签 id；停放时的事件过滤用 */
+const trackedIds = (): ReadonlySet<number> => new Set([...media, ...meets].map(t => t.id!));
+const schedule = debounce(() => void reload(parkClosed()), 100);
 const later = () => { setTimeout(schedule, 300); }; // 页面切换状态需要时间（300ms 为实现取值，非 Arc 值）
 const onUpdated = (id: number, c: chrome.tabs.OnUpdatedInfo) => {
-    if ("url" in c) schedule(); if (c.audible === false) dismissed.delete(id); if ("audible" in c || "mutedInfo" in c) schedule(); };
+    if (c.audible === false) dismissed.delete(id);
+    if (updateMatters(id, c, trackedIds(), parkClosed())) schedule(); // 补丁 inpage-parked-timers-stop-b：停放时只对会改变托盘内容的事件重读（见 parkFilter.ts）
+};
+const onRemoved = (id: number) => { if (removalMatters(id, trackedIds(), parkClosed())) schedule(); };
 
 const exec = (tabId: number, func: () => void) => safeExpected(chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func }), "scripting.executeScript", "script");
 const playPause = (tabId: number) => exec(tabId, () => {
@@ -125,11 +137,12 @@ export default definePlugin({
     },
     panel: {
         async start() {
+            // 补丁 inpage-parked-timers-stop-b：监听停放时也保持挂着（18 摘掉它们 → 停放期间才出现的行要等切回后的异步重读，r56e 实测前 4 帧为空）；停放时的成本由 parkFilter 过滤 + 签名未变不 refresh 控制
             chrome.tabs.onUpdated.addListener(onUpdated);
-            chrome.tabs.onRemoved.addListener(schedule);
+            chrome.tabs.onRemoved.addListener(onRemoved);
             await reload();
             return [
-                () => { chrome.tabs.onUpdated.removeListener(onUpdated); chrome.tabs.onRemoved.removeListener(schedule); },
+                () => { chrome.tabs.onUpdated.removeListener(onUpdated); chrome.tabs.onRemoved.removeListener(onRemoved); },
                 addSection("footer", "Media", {
                     render(el) {
                         if (meets.length) el.append(h("div", { class: "arc-media" }, meets.map(t => h("div", { class: "arc-media-row", "data-test": "meet-row" },

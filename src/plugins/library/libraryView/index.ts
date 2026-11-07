@@ -15,6 +15,7 @@ import { tr } from "@api/i18n";
 import { folderGlyph, icon } from "@api/icons";
 import { h } from "@api/dom";
 import { safe } from "@api/ErrorLog";
+import { parkedInterval } from "@api/ParkLife";
 import { addOverlay, addSection, openOverlay, refresh } from "@api/Slots";
 import { faviconUrl } from "@utils/misc";
 import { isPluginEnabled } from "@api/PluginManager";
@@ -160,9 +161,9 @@ function renderDownloads(box: HTMLElement, media = false) {
         if (!items.length) list.append(h("div", { class: "arc-hint" }, media ? tr("library.noMedia") : tr("library.noDownloadsArc")));
     };
     void draw();
-    const t = setInterval(draw, 2000);
+    const t = parkedInterval(() => void draw(), 2000); // 补丁 inpage-parked-timers-stop：停放时真停表，切回补一次（距上次 ≥ 2 s）并重启
     box.append(h("div", { class: "arc-lib-top" }, h("span", { class: "arc-lib-heading" }, media ? tr("library.media") : tr("library.downloads"))), list);
-    return () => clearInterval(t);
+    return t;
 }
 
 function renderSpaces(box: HTMLElement) {
@@ -235,22 +236,25 @@ function recentFiles(el: HTMLElement) {
 /** 侧边栏底部的下载进度条（同 Arc 的下载提示）：仅在有进行中的下载时出现，点击打开下载列表 */
 function downloadsTray() {
     let active: chrome.downloads.DownloadItem[] = [];
-    let timer: ReturnType<typeof setInterval> | undefined;
+    let timer: (() => void) | undefined; // parkedInterval 的停止函数
     const poll = async () => {
         const next = await chrome.downloads.search({ state: "in_progress" });
         const changed = next.length !== active.length || next.some((d, i) => d.bytesReceived !== active[i]?.bytesReceived);
         active = next;
-        if (!active.length && timer) { clearInterval(timer); timer = undefined; }
-        else if (active.length && !timer) timer = setInterval(() => void poll(), 1000);
+        if (!active.length && timer) { timer(); timer = undefined; }
+        else if (active.length && !timer) timer = parkedInterval(() => void poll(), 1000); // 补丁 inpage-parked-timers-stop：停放时真停表（不每秒查），切回补一次并重启
         if (changed) refresh();
     };
+    // 补丁 inpage-parked-timers-stop-b：事件监听停放时也保持挂着、事件来了直接 poll（不再 unlessParked / 摘监听）：停放期间新开始的下载，切回那一拍托盘行就在
+    // （poll → refresh() 只会让 shell.render 记脏位，visibilitychange 同步补渲染）。成本很小：onChanged 不含 bytesReceived / estimatedEndTime（Chrome 文档），只在下载开始 / 暂停 / 完成等状态变化时触发；
+    // 进度的每秒轮询仍由 parkedInterval 停表（停放不轮询，切回补一次并重启）
     const onEv = () => void poll();
     chrome.downloads.onCreated.addListener(onEv);
     chrome.downloads.onChanged.addListener(onEv);
     void poll();
     const pct = (d: chrome.downloads.DownloadItem) => d.totalBytes > 0 ? Math.round(d.bytesReceived / d.totalBytes * 100) : 0;
     return [
-        () => { chrome.downloads.onCreated.removeListener(onEv); chrome.downloads.onChanged.removeListener(onEv); if (timer) clearInterval(timer); },
+        () => { chrome.downloads.onCreated.removeListener(onEv); chrome.downloads.onChanged.removeListener(onEv); if (timer) timer(); timer = undefined; },
         addSection("footer", "LibraryView", {
             order: 5,
             render(el) {
@@ -270,7 +274,7 @@ function downloadsTray() {
 
 /* ARCUI BoxOfThingsIcon（library-boxofthings.md）：ZStack 居中叠放 glow / star（矩形遮罩）/ triangle / circle / box。
  * 每层 = 外层 <i>（变换 + 阴影）包内层 <b>（模板 PNG 遮罩，按钮前景色）。数值见 sidepanel.css。 */
-function boxOfThings() {
+export function boxOfThings() {
     const L = (c: string) => h("i", { class: c }, h("b"));
     return h("span", { class: "arc-boxthings", "aria-hidden": "true", "data-test": "boxthings" },
         L("g"), h("i", { class: "sm" }, L("s")), L("t"), L("c"), L("b"));

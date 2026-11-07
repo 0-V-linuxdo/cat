@@ -3,10 +3,15 @@ import { flog } from "@api/FocusLog";
 import { bootstrap } from "@src/ArcSidebar";
 import { flushChromeEvents, registerChromeEvents } from "@api/ChromeEvents";
 import { installSidePanelGesture, violations } from "@api/SidePanelGesture";
+import { gcOwnIntents, OWN_DL_GC_ALARM } from "@utils/ownDownload";
 
 registerChromeEvents();
 installSidePanelGesture(); // 侧栏开关：顶层同步注册，手势里同步决定（不经 ChromeEvents 缓冲）
 void bootstrap("background").then(flushChromeEvents);
+// rel61 downloadrename-own-filename：本扩展下载意图（storage.session 的 ownDl: 条目）的清理——服务进程每次启动扫一次过期条目，
+// 登记时排的一次性闹钟到点再扫（顶层同步注册，闹钟能唤醒服务进程）。见 @utils/ownDownload
+chrome.alarms.onAlarm.addListener(a => { if (a.name === OWN_DL_GC_ALARM) void gcOwnIntents().catch(() => 0); /* 预期：失败下次再清 */ });
+void gcOwnIntents().catch(() => 0); /* 预期：失败下次再清 */
 
 /* 扩展重载 / 更新后，已经打开的网页里没有新的内容脚本（Chrome 不会自动补注入）：
  * 这会让“点网页 = 点外面”、Alt+Q 等全部失灵，直到刷新网页。安装 / 更新 / 启动时补注入。 */

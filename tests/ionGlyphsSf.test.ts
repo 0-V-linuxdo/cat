@@ -31,10 +31,10 @@ test("每个原 ionicons 名字都换成 Rea 导出的 SF 字形（viewBox / pat
     }
 });
 
-test("没有 ionicons 残留；4 个无引用的已删；sparkles 不在这里（icons.ts 手写 ⛔）", () => {
+test("没有 ionicons 残留；4 个无引用的已删；sparkles 不在这里（在 icons.ts 的 SF_GLYPHS，⛔ SF closest）", () => {
     expect(ionSrc).not.toMatch(/-outline_UF[0-9A-F]+\.svg/);
     for (const n of ["arrowUp", "folderOpen", "leave", "history", "sparkles"]) expect(n in G).toBe(false);
-    expect(r("src/api/icons.ts")).toMatch(/sparkles: "M7 2\.5/);
+    expect(r("src/api/icons.ts")).not.toMatch(/sparkles: "M7 2\.5/); // 手写路径已删
 });
 
 test("每条都有出处注释（ionicons-to-arc.md 行号）；suggested/ 的条目注明 ⛔ 源码未找到（suggestion）", () => {

@@ -6,6 +6,7 @@
  * 通用页 = 界面语言 + 版本。改动即时保存（同 Void++），需要重载的改动显示提示条。
  */
 import { arcConfirm } from "@components/Dialog";
+import { appearanceMode, applyThemeAttr, earlyAppearance, watchAppearance } from "@api/Appearance";
 import { tr } from "@api/i18n";
 import { h } from "@api/dom";
 import "@components/ArcTooltip";
@@ -16,8 +17,9 @@ import { resetPluginSettings } from "@api/Settings";
 import { Dropdown } from "@components/Menu";
 import { toggleWithFeedback } from "@components/settings/PluginCard";
 import { hasVisibleSettings, SettingFields } from "@components/settings/SettingField";
-import { label, listedPlugins, PLUGIN_CATEGORY_TABS, type ListFilter } from "@components/settings/utils";
+import { cardIconOf, cardTags, categoryListing, label, listedPlugins, PLUGIN_CATEGORY_TABS, type ListFilter, type PluginCategory, visibleCategoryTabs } from "@components/settings/utils";
 import { dump, restore } from "@plugins/data/backup";
+import { boxOfThings } from "@plugins/library/libraryView";
 import { bootstrap } from "@src/ArcSidebar";
 import type { Plugin } from "@utils/types";
 
@@ -26,6 +28,9 @@ type PageId = "plugins" | "general";
 let selected: PageId = new URLSearchParams(location.hash.slice(1)).get("page") === "general" ? "general" : "plugins";
 let query = "";
 let filter: ListFilter = "all";
+/** ⛔ Void++ 默认选中 favorites（PluginsTab.tsx:87 useState("favorites")）；Cat 设置页的卡片上没有收藏星标（星标只在侧边栏的插件设置里），默认进收藏 = 永远是空页，所以默认 "all"（Void++ 的参考截图也是 All 选中）。一处常量，要改成 "favorites" 只改这里 */
+const DEFAULT_CATEGORY: PluginCategory = "all";
+let category: PluginCategory = DEFAULT_CATEGORY;
 let needsReload = false;
 
 function toast(msg: string) {
@@ -40,8 +45,22 @@ const tagOf = (p: Plugin) => (p.tags ?? []).find(t => ORDER.includes(t)) ?? "";
 /** 插件列表 = 6 个分组插件（按 标签 / 空间 / 命令 / 视图 / 资料库 / 数据 排序） */
 const groupPlugins = () => listedPlugins().toSorted((a, b) => ORDER.indexOf(tagOf(a)) - ORDER.indexOf(tagOf(b)));
 function authorsOf(x: { authors?: readonly unknown[] }) { return (x.authors ?? []).map(a => typeof a === "string" ? a : (a as { name?: string }).name ?? "").join(", "); }
-const featureNames = (p: Plugin) => (p.features ?? []).map(f => label(f as Plugin));
-const iconOf = (p: Plugin) => PLUGIN_CATEGORY_TABS.find(t => t.id === tagOf(p))?.icon ?? "plugin";
+const featureNames = cardTags; // 卡片底部标签（搜索也用）：features 名 → featureTags → 插件名
+/** 卡片左上角图标：按插件 name 的映射（settings/utils.ts PLUGIN_CARD_ICON）；没有映射 → null（不渲染 .arc-vcard-icon 容器）。
+ * glyph 盒 14：⛔ Arc 没有统一尺寸（plugin-icons.md §3），所有卡片同一个值放进现有容器；SF 字形按 14/16 缩放（导出规格 16pt Regular）。
+ * BoxOfThings 原尺寸 16×16（资源 @1x 像素），为视觉上与其它图标一样大，按 14/16 缩放（options.css .arc-vcard-icon .arc-boxthings，⛔ 调整值，非 Arc 取值）。 */
+const CARD_ICON_BOX = 14;
+/** 插件卡「配置」按钮 = SF slider.horizontal.3（原 Arc 站点控制中心的 `sliders`，与旧 General 同图，被误读）：⛔ SF closest，语义取自 Void++ PluginCard.tsx:92（配置 = 滑杆）；
+ *  盒 14 沿用原值（按钮本身不变）。`sliders` 仍是地址栏站点控制按钮的图标，不要动。 */
+const CFG_ICON_BOX = 14;
+/** 左侧导航图标：Plugins = SF powerplug.portrait、General = SF gearshape（⛔ SF closest，语义取自 Void++：Plugins = UnplugIcon 插头、Settings = SettingsIcon 齿轮；Arc 无设置页导航图标）。
+ *  glyph 按 14/16 缩放（同 CARD_ICON_BOX：powerplug.portrait 16pt 高 17.8 > 16、gearshape 宽 16.7 > 16），外面包一个 16×16 居中容器（options.css .arc-opt-nav-icon）：
+ *  SF 字形宽度各不同，不包的话两行的文字起点会错位（⛔ 16 = 原 icon() 默认盒，14 = rel44 调整值，非 Arc 取值）。 */
+const NAV_ICON_BOX = 14;
+function cardIcon(p: Plugin) {
+    const k = cardIconOf(p);
+    return k ? h("span", { class: "arc-vcard-icon", "data-icon": k }, k === "boxOfThings" ? boxOfThings() : icon(k, CARD_ICON_BOX)) : null;
+}
 
 function card(p: Plugin) {
     const on = isPluginEnabled(p.name);
@@ -49,16 +68,16 @@ function card(p: Plugin) {
     return h("article", { class: `arc-vcard${p.required ? " required" : ""}${on ? "" : " off"}`, "data-plugin": p.name, "data-card": p.name },
         h("div", { class: "arc-vcard-body" },
             h("div", { class: "arc-vcard-head" },
-                h("span", { class: "arc-vcard-icon" }, icon(iconOf(p), 14)),
+                cardIcon(p),
                 h("span", { class: "arc-vcard-name" },
                     h("span", { class: "arc-vcard-title" }, label(p)),
                     // 必需插件标记：原来用 icon("alert")，换成 Arc 资源后变成 ⚠ 警告三角，被误读为错误 → 改为文字徽标
                     p.required ? h("span", { class: "arc-vcard-req", "data-test": "req-badge", "data-tip": tr("settings.requiredReason") }, tr("settings.required")) : null),
                 h("span", { class: "arc-vcard-controls" },
-                    hasVisibleSettings(p) || tagOf(p) === "data" ? h("button", { class: "arc-icon-btn arc-vcard-cfg", "data-tip": tr("settings.configure"), "aria-label": `${tr("settings.configure")} ${label(p)}`, "data-config": p.name, onclick: () => openDialog(p) }, icon("sliders", 14)) : null,
+                    hasVisibleSettings(p) || tagOf(p) === "data" ? h("button", { class: "arc-icon-btn arc-vcard-cfg", "data-tip": tr("settings.configure"), "aria-label": `${tr("settings.configure")} ${label(p)}`, "data-config": p.name, onclick: () => openDialog(p) }, icon("sliderHorizontal3", CFG_ICON_BOX)) : null,
                     p.required ? null : h("label", { class: "arc-toggle", "data-tip": label(p) }, h("input", { type: "checkbox", checked: on, "data-test": `plugin:${p.name}`, onchange: () => void toggleWithFeedback(p, { onChange: draw, onMessage: toast }) }), h("span", { class: "arc-toggle-track" })))),
             h("div", { class: "arc-vcard-desc" }, tr(p.description ?? ""))),
-        h("div", { class: "arc-vcard-foot", "data-tip": feats.join(" · ") }, feats.length ? feats.join(" · ") : authorsOf(p) || "\u00A0"));
+        h("div", { class: "arc-vcard-foot", "data-tip": feats.join(" · ") }, feats.join(" · "))); // ⛔ 无 Arc 依据（保持现有 .arc-vcard-foot 视觉，只统一内容来源）；不再回落成作者名（Devs.ArcSidebar = "Cat Contributors"）
 }
 
 function actionRow(title: string, detail: string, btn: string, onclick: () => void, test: string) {
@@ -105,22 +124,36 @@ function openDialog(p: Plugin) {
 function closeDialog() { document.querySelector(".arc-vdialog-scrim")?.remove(); draw(); }
 addEventListener("keydown", (e: Event) => { if ((e as KeyboardEvent).key === "Escape" && document.querySelector(".arc-vdialog-scrim") && !document.querySelector(".arc-menu:not([hidden])")) closeDialog(); });
 
+/* 分类栏（Void++ PluginsTab.tsx 206-218 / 87）：分类 → 启用筛选 → 搜索，三者叠加。默认选中 ⛔ 与 Void++ 不同，见 DEFAULT_CATEGORY */
+const catBar = h("div", { class: "arc-opt-cats", role: "tablist", "data-test": "opt-cats" });
+let searchEl: HTMLInputElement | null = null;
+function drawCats() {
+    catBar.replaceChildren(...visibleCategoryTabs().map(t => h("button", {
+        class: `arc-opt-cat${t.id === category ? " active" : ""}`, role: "tab", "aria-selected": String(t.id === category), "data-cat": t.id, "data-test": `opt-cat:${t.id}`,
+        onclick: () => { category = t.id; drawCats(); drawList(); },
+    }, tr(t.label))));
+}
+/** ⛔ 分类栏的按钮高度 / 内边距 / 字号 / 圆角 / 悬停没有 Void++ 来源（Void++ 里是 Grok 的 Button tertiary sm）：取 Cat 现有控件值，见 options.css .arc-opt-cats 注释
+ *  Void++ 220：占位文字里的数量 = 当前分类（+ 启用筛选）下的插件数，不含搜索 */
+const inCategory = () => { const r = categoryListing(groupPlugins(), category, filter); return [...r.user, ...r.required]; };
+/** Void++ emptyHint 48-53 */
+const emptyHint = () => tr(query ? "settings.noMatch" : category === "favorites" ? "settings.noFavorites" : "settings.noPlugins");
+
 const listBox = h("div", { class: "arc-opt-list" });
 function drawList() {
-    const match = (p: Plugin) => (!query || `${label(p)} ${tr(p.description ?? "")} ${featureNames(p).join(" ")} ${Object.values(p.settings?.def ?? {}).map(d => tr(d.description)).join(" ")}`.toLowerCase().includes(query))
-        && (filter === "all" || isPluginEnabled(p.name) === (filter === "enabled"));
-    const all = groupPlugins().filter(match);
-    const user = all.filter(p => !p.required), req = all.filter(p => p.required);
+    const { user, required: req } = categoryListing(groupPlugins(), category, filter, query);
+    if (searchEl) searchEl.placeholder = tr("settings.searchPlugins", inCategory().length);
     listBox.replaceChildren(...[
         user.length ? h("div", { class: "arc-opt-grid" }, user.map(card)) : null,
         user.length && req.length ? h("hr", { class: "arc-opt-sep" }) : null,
         req.length ? h("div", { class: "arc-opt-grid" }, req.map(card)) : null,
-        all.length ? null : h("div", { class: "arc-hint" }, tr("settings.noMatch"))].filter(Boolean) as Node[]);
+        user.length + req.length ? null : h("div", { class: "arc-hint" }, emptyHint())].filter(Boolean) as Node[]);
 }
 
-function filterBar(total: number) {
-    const search = h("input", { class: "arc-input arc-opt-search", type: "search", value: query, placeholder: tr("settings.searchPlugins", total), "data-test": "opt-search",
+function filterBar() {
+    const search = h("input", { class: "arc-input arc-opt-search", type: "search", value: query, placeholder: tr("settings.searchPlugins", inCategory().length), "data-test": "opt-search",
         oninput: () => { query = search.value.trim().toLowerCase(); drawList(); } }) as HTMLInputElement;
+    searchEl = search;
     search.addEventListener("keydown", e => { if ((e.altKey || e.metaKey || e.ctrlKey) && e.key.length === 1) e.preventDefault(); });
     const dd = Dropdown({ options: [{ label: tr("common.all"), value: "all" }, { label: tr("settings.filterEnabled"), value: "enabled" }, { label: tr("settings.filterDisabled"), value: "disabled" }], value: filter, onChange: v => { filter = v as ListFilter; drawList(); } });
     dd.dataset.test = "opt-filter";
@@ -141,32 +174,40 @@ function page() {
             h("div", { class: "arc-opt-card" }, SettingFields(plugins.PluginSettings, toast) ?? ""),
             h("div", { class: "arc-opt-foot" }, tr("settings.footer", VERSION, groupPlugins().length)));
     }
-    drawList();
+    drawCats(); drawList();
     return h("section", { class: "arc-opt-page", "data-category-page": "plugins" },
         reloadBanner(),
         h("h1", null, tr("settings.plugins")),
         h("p", { class: "arc-opt-lead" }, tr("settings.pluginsLead")),
-        filterBar(groupPlugins().length), listBox);
+        catBar, filterBar(), listBox);
 }
 
 function navItem(id: PageId, lbl: string, ic: Parameters<typeof icon>[0]) {
     return h("button", {
         class: `arc-opt-nav-item${id === selected ? " active" : ""}`, "data-nav": id,
-        onclick: () => { selected = id; query = ""; filter = "all"; history.replaceState(null, "", `#page=${id}`); draw(); },
-    }, icon(ic), h("span", { class: "arc-opt-nav-label" }, lbl));
+        onclick: () => { selected = id; query = ""; filter = "all"; category = DEFAULT_CATEGORY; history.replaceState(null, "", `#page=${id}`); draw(); },
+    }, h("span", { class: "arc-opt-nav-icon", "data-icon": ic }, icon(ic, NAV_ICON_BOX)), h("span", { class: "arc-opt-nav-label" }, lbl));
 }
 
 const nav = h("nav", { class: "arc-opt-nav" });
 const main = h("main", { class: "arc-opt-main" });
 function draw() {
     if (document.querySelector(".arc-vdialog-scrim")) return; // 对话框打开时不重绘底层（避免丢焦点）
-    nav.replaceChildren(navItem("plugins", tr("settings.plugins"), "plugin"), navItem("general", tr("settings.general"), "sliders"));
+    nav.replaceChildren(navItem("plugins", tr("settings.plugins"), "powerplugPortrait"), navItem("general", tr("settings.general"), "gearshape"));
     const scroll = main.scrollTop;
     main.replaceChildren(page());
     main.scrollTop = scroll;
 }
 
+/* 外观（Themes.mode，存放在 plugins.Spaces.mode）：auto = 跟系统（options.css 的 @media，运行中随系统切换，不重载不重绘），light / dark = <html data-theme> 钉住。
+ * 首帧：设置加载前先单独读一次存储写 data-theme（auto 什么都不写）；加载完后以设置为准并订阅后续变化。 */
+let appearanceSettled = false;
+void earlyAppearance(document.documentElement, () => appearanceSettled);
+
 void bootstrap("options").then(() => {
+    appearanceSettled = true;
+    applyThemeAttr(document.documentElement, appearanceMode());
+    watchAppearance(s => applyThemeAttr(document.documentElement, s.mode));
     document.title = tr("settings.pageTitle");
     app.append(h("aside", { class: "arc-opt-side" }, nav), main);
     draw();

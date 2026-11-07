@@ -22,6 +22,7 @@ import { call, handle } from "@api/RPC";
 import { definePluginSettings } from "@api/Settings";
 import { createPluginStore } from "@api/Storage";
 import { Devs } from "@utils/constants";
+import { PAGE_Z_MAX } from "@utils/zLayers";
 import definePlugin, { OptionType } from "@utils/types";
 
 const settings = definePluginSettings({
@@ -265,7 +266,7 @@ export default definePlugin({
                 arcTooltip(btn, tr("peek.cmdMove")); // shadow root 内：样式与提示挂进该 root
                 btn.addEventListener("click", () => void call("peek:promote"));
                 const st = document.createElement("style");
-                st.textContent = `:host{all:initial;position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;gap:6px}button{display:inline-flex;align-items:center;gap:5px;font:12px system-ui,sans-serif;padding:4px 10px;border-radius:7px;border:0;background:rgb(30 30 34/.82);color:#fff;cursor:pointer;opacity:.75;backdrop-filter:blur(8px)}button:hover{opacity:1}button[hidden]{display:none}button{padding:5px 7px}`;
+                st.textContent = `:host{all:initial;position:fixed;top:8px;right:8px;z-index:${PAGE_Z_MAX};display:flex;gap:6px}button{display:inline-flex;align-items:center;gap:5px;font:12px system-ui,sans-serif;padding:4px 10px;border-radius:7px;border:0;background:rgb(30 30 34/.82);color:#fff;cursor:pointer;opacity:.75;backdrop-filter:blur(8px)}button:hover{opacity:1}button[hidden]{display:none}button{padding:5px 7px}`;
                 const sp = document.createElement("button");
                 sp.append(icon("splitCols", 13)); sp.setAttribute("aria-label", tr("peek.toSplit")); arcTooltip(sp, tr("peek.toSplit")); sp.dataset.peek = "split"; sp.hidden = true;
                 void call<boolean>("peek:canSplit").then(ok => { sp.hidden = !ok; }).catch((e: unknown) => console.warn("[Cat] peek peek:canSplit", e)); /* 内容脚本里 @api/ErrorLog 不可达：只 console.warn */

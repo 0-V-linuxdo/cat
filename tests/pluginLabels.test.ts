@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { LOCALES } from "@api/i18n";
 
 /* 验收 51950：插件页卡片显示键名。所有可选插件的名称 / 描述键必须在模块加载时就能解析（插件默认关闭，start() 不会执行） */
-const OPTIONAL = ["boosts", "capture", "cleanUrls", "downloadRename", "tabSleep", "tidyTabTitles", "tidyTabs"];
+const OPTIONAL = ["boosts", "capture", "cleanUrls", "downloadRename", "inpageSidebar", "sessionTransfer", "tabSleep", "tidyTabTitles", "tidyTabs"];
 
 describe("可选插件名称和描述都能解析出文字", () => {
     for (const dir of OPTIONAL) test(dir, async () => {

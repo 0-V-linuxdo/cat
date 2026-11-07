@@ -1,5 +1,6 @@
 import { contentGuard } from "./contentGuardInstall";
 import { bootstrap } from "@src/ArcSidebar";
+import { runEarly } from "@plugins/inpageSidebar/earlyEntry";
 
 /*
  * 内容脚本注入所有框架（manifest all_frames），但只在两种情况下运行：
@@ -10,6 +11,8 @@ const inSplitPane = (() => {
     const anc = location.ancestorOrigins;
     return !!anc?.length && anc[anc.length - 1] === new URL(chrome.runtime.getURL("")).origin && anc.length === 1;
 })();
+/* 补丁 inpage-residual：bootstrap 要先读设置、走完 Init 阶段才轮到页内侧栏的 content.start；有「上次是展开的」提示时在这里（同一次同步执行里）先起早实例，壳不用等那条链（见 plugins/inpageSidebar/earlyEntry.ts） */
+if (window.top === window && contentGuard.alive()) runEarly();
 if (window.top === window || inSplitPane) { if (contentGuard.alive()) void bootstrap("content"); }
 // 唤醒后台：浏览器重启后 MV3 后台不会自己启动（Helium 也收不到 onStartup），网页一加载就 ping，让“重启恢复”检查尽早运行
 if (window.top === window) { try { void chrome.runtime.sendMessage({ type: "arc-ping", from: "content" }).catch((e: unknown) => { if (!/Receiving end does not exist/.test(String((e as Error)?.message ?? e))) console.warn("[Cat] content sendMessage", e); }); } catch { /* 扩展已重载 */ } /* 内容脚本里 @api/ErrorLog 不可达：只 console.warn；侧栏未开时“没有接收端”是预期，忽略 */ }

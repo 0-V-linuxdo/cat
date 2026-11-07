@@ -6,13 +6,14 @@
 import { tr } from "@api/i18n";
 import { restoreFocus } from "@api/FocusPolicy";
 import { h } from "@api/dom";
+import { Z } from "@utils/zLayers";
 
 type Auto = { confirm?: (msg: string) => boolean; prompt?: (msg: string, def: string) => string | null };
 const auto = () => (globalThis as { __arcDialogAuto?: Auto }).__arcDialogAuto;
 
 /* 源码未找到（unconfirmed-values-verified.md §7）：对话框各值为 macOS 提示框惯例的现值。 */
 const CSS = `
-.arc-dlg-mask { position: fixed; inset: 0; z-index: 60; background: rgb(0 0 0 / .18); display: grid; place-items: center; animation: arc-dlg-fade .12s ease-out; }
+.arc-dlg-mask { position: fixed; inset: 0; z-index: ${Z.confirm}; background: rgb(0 0 0 / .18); display: grid; place-items: center; animation: arc-dlg-fade .12s ease-out; }
 .arc-dlg { width: min(260px, calc(100vw - 24px)); box-sizing: border-box; padding: 16px; border-radius: 12px; background: var(--arc-menu, var(--opt-bg, #fff)); color: var(--arc-fg, var(--opt-fg, #111));
   box-shadow: 0 0 0 .5px rgb(0 0 0 / .18), 0 12px 32px rgb(0 0 0 / .28); display: grid; gap: 12px; text-align: center; font-size: 13px; animation: arc-dlg-in .14s cubic-bezier(.2,.9,.3,1);
   -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); }

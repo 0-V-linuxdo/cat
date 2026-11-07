@@ -7,6 +7,8 @@ export const STRINGS = {
     en: {
         "plugin.tidyTabs.label": "Tidy Tabs", // Arc 设置页功能名
         "plugin.tidyTabs.desc": "Group Today tabs with AI", // 自补（Arc 描述前半句未解出）
+        "tidyTabs.tag.group": "Group Today Tabs",
+        "tidyTabs.tag.undo": "Undo",
         "tidyTabs.button": BUTTON_TEXT,
         "tidyTabs.tooltip": ARC_TOOLTIP,
         "tidyTabs.other": MISC_GROUP_NAME,
@@ -20,6 +22,8 @@ export const STRINGS = {
     zh: {
         "plugin.tidyTabs.label": "整理标签",
         "plugin.tidyTabs.desc": "用 AI 给今日标签分组",
+        "tidyTabs.tag.group": "分组今日标签",
+        "tidyTabs.tag.undo": "撤销",
         "tidyTabs.button": "整理",
         "tidyTabs.tooltip": "整理今日标签",
         "tidyTabs.other": "其他",

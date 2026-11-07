@@ -1,6 +1,6 @@
 {
   "name": "arc-sidebar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Arc 风格侧边栏 Chrome 扩展（MV3），一切皆插件，架构仿 Void++",
   "type": "module",

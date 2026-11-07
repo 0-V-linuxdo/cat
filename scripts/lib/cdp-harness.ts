@@ -6,12 +6,23 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer } from "net";
+import { ClockWatch, describeEvent, raceWithClockTimeout } from "../../src/selftest/clockWatch";
 
 export const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 export class StepTimeout extends Error {}
-export async function withTimeout<T>(name: string, ms: number, p: Promise<T>): Promise<T> {
-    let t: ReturnType<typeof setTimeout>;
-    return Promise.race([p, new Promise<T>((_, rej) => { t = setTimeout(() => rej(new StepTimeout(`步骤超时（${ms}ms）：${name}`)), ms); })]).finally(() => clearTimeout(t));
+/** rel45：单调时钟（Date.now 在 VM 快照 / 恢复后会跳；超时、等待截止、卡死判定都用它） */
+export const mono = () => performance.now();
+/** rel45：时钟跳变 / 进程冻结检测（每 250ms 采样 wall 与 mono；超时回调里还会补采）。unref：不拖住进程退出 */
+export const clock = new ClockWatch({ wall: () => Date.now(), mono });
+clock.onEvent = e => console.log(`[时钟跳变] 检测到${describeEvent(e)}（单调时钟 ${Math.round(e.at)}ms 处）`);
+{ const t = setInterval(() => { clock.sample(); }, clock.interval) as any; t.unref?.(); }
+/** 超时判定走单调时钟差并扣掉检测到的冻结时间：冻结 / 恢复后到期的定时器不再直接判超时，而是顺延剩余有效时间（最多 2 次，写日志）；真超时照常 reject */
+export function withTimeout<T>(name: string, ms: number, p: Promise<T>): Promise<T> {
+    return raceWithClockTimeout(p, {
+        ms, watch: clock, maxExt: 2,
+        mkError: i => new StepTimeout(`步骤超时（${ms}ms）：${name}${i.events.length ? `（期间检测到 ${i.events.length} 次时钟跳变 / 冻结：${i.events.slice(-2).map(describeEvent).join("；")}；顺延 ${i.extensions} 次后仍超时，有效耗时 ${Math.round(i.effective)}ms）` : ""}`),
+        onExtend: i => console.log(`[时钟跳变] 「${name}」超时定时器触发时检测到${i.events.slice(-1).map(describeEvent).join("")}：有效耗时仅 ${Math.round(i.effective)}ms < ${ms}ms，不判超时，顺延 ${i.remaining}ms（第 ${i.extension}/2 次）`),
+    });
 }
 export const freePort = () => new Promise<number>((res, rej) => { const s = createServer(); s.unref(); s.on("error", rej); s.listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => res(p)); }); });
 

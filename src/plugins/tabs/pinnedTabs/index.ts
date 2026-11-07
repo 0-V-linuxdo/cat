@@ -8,12 +8,14 @@ import "@components/ArcTooltip";
 import { safe } from "@api/ErrorLog";
 import { tr } from "@api/i18n";
 import { onTabIdRemap } from "@api/TabIdRemap";
+import { listen } from "@api/ChromeEvents";
 import { applyUrlTransforms } from "@api/UrlTransforms";
 import { toast } from "@api/PanelShell";
 import { icon } from "@api/icons";
 import { expandDragData } from "@api/DragData";
 import { recordStoreUndo } from "@api/Undo";
-import { addClaimProvider } from "@api/Claims";
+import { addClaimProvider, claimedTabIds } from "@api/Claims";
+import { getPluginSettings } from "@api/Settings";
 import type { MenuTarget } from "@api/ContextMenus";
 import { copyText } from "@api/Clipboard";
 import { h } from "@api/dom";
@@ -25,14 +27,16 @@ import { call } from "@api/RPC";
 import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import { activeTab, getTab, getTabs, getWindowId } from "@plugins/_core/tabState";
-import { activeSpace, spacesStore } from "@plugins/spaces/spaceManager/store";
+import { activeSpace, spaceOfTab, spacesStore } from "@plugins/spaces/spaceManager/store";
 import { floatingEdit, focusOrOpen, inlineRename, rowIconAnchor, TabRow } from "@components/TabRow";
 import { openIconPicker } from "@components/IconPicker";
 import { favStore } from "@plugins/spaces/favorites/store";
-import { reattachByUrl } from "./reattach";
+import { reattachByUrl, reattachOnRestart } from "./reattach";
+import { clearClosedTabId, shouldClearOnRemoved } from "./closedTab";
 import { editPinnedMenu, editPinnedUrlOf, editPinnedVisible } from "./editPinnedMenu";
-import { detach, locate, type PinNode, pinnedStore, walk } from "./model";
+import { detach, locate, type PinNode, pinNodeFromTab, pinnedStore, tabUrl, walk } from "./model";
 import { duplicatePinNode } from "./dupNode";
+import { openTabIdsOf, todayTopIndex } from "./keepOpen";
 
 export { type PinNode, pinnedStore, walk } from "./model";
 
@@ -48,7 +52,7 @@ export async function mutateSpace(fn: (list: PinNode[]) => void, spaceId = activ
 export async function pinTab(tab: chrome.tabs.Tab | undefined, opts?: { before?: string; into?: string }) {
     if (!tab?.id) return;
     if (pinnedOwner(tab.id)) return;
-    const node: PinNode = { id: uid(), kind: "tab", url: tab.url, title: tab.title, tabId: tab.id };
+    const node = pinNodeFromTab(tab, uid());
     await mutateSpace(list => insertNode(list, node, opts));
 }
 
@@ -76,6 +80,41 @@ export async function unpin(id: string, close = false) {
     if (close && tabId != null) await chrome.tabs.remove(tabId).catch(() => { /* No tab with id：标签已关，属正常 */ });
 }
 
+/** 补丁 rel65-pin-unpin ①（keepOpen.ts，用户 11/2 定，Arc 行为）：Remove Pin(s) = 移除固定项；打开着的标签保持打开、回到 Today 顶部（不关 → 不进最近关闭）；
+ *  没打开的固定项只移除条目。⌘Z = 固定区快照撤销（与 unpin 同一种 store 撤销）：固定项连同 tabId 写回，标签重新被固定区认领。 */
+export async function removePinsKeepOpen(ids: string[], label = tr(ids.length > 1 ? "pinned.removePins" : "pinned.removePin")) {
+    if (!ids.length) return;
+    recordStoreUndo(label, pinnedStore);
+    const removed: PinNode[] = [];
+    await mutateSpace(list => { for (const id of ids) { const n = detach(list, id); if (n) removed.push(n); } });
+    const open = openTabIdsOf(removed, id => !!getTab(id));
+    if (open.length) await moveToTodayTop(open);
+}
+
+/** 把标签放到当前空间 Today 顶部（顶部随 Today 的排序设置：默认 top = 标签条末尾；bottom = 第一个 Today 标签之前，keepOpen.ts todayTopIndex） */
+async function moveToTodayTop(ids: number[]) {
+    const sp = activeSpace().id;
+    for (const id of ids) {
+        if (spaceOfTab(id) !== sp) await safe(call("spaces:moveTab", id, sp), "spaces:moveTab");
+        // Chrome 自己的固定标签不能移出标签条的固定段：先取消 Chrome 固定（onUpdated 同步里 owner 已不存在 → 不会再固定回来）
+        if (getTab(id)?.pinned) await safe(chrome.tabs.update(id, { pinned: false }), "tabs.update");
+    }
+    const tabs = getTabs(), claimed = claimedTabIds();
+    const mine = ids.filter(id => getTab(id)?.windowId === getWindowId()), other = ids.filter(id => !mine.includes(id));
+    const today = tabs.filter(t => t.id != null && !claimed.has(t.id) && spaceOfTab(t.id) === sp).map(t => t.id!);
+    const order = getPluginSettings("TodayTabs").order as string | undefined;
+    if (mine.length) await safe(chrome.tabs.move(mine, { index: todayTopIndex(order, tabs, today, mine) }), "tabs.move");
+    if (other.length) await safe(chrome.tabs.move(other, { index: -1 }), "tabs.move");
+}
+
+/** 补丁 rel65-pin-unpin ②：Today 行右键「Pin Tab」= 拖进「Drag tabs here to pin」区（同一个 handleDrop(tab:<id>, {})，放到固定区末尾）。
+ *  另记一条固定区快照撤销（⌘Z 退回 Today，同多选「固定 N 个标签」multi.pinN）；单个拖进固定区本身不记撤销（现状，未改）。 */
+export async function pinFromToday(tabId: number | undefined) {
+    if (tabId == null || !getTab(tabId) || pinnedOwner(tabId)) return;
+    recordStoreUndo(tr("pinned.pinTab"), pinnedStore);
+    await handleDrop(`tab:${tabId}`, {});
+}
+
 async function togglePinActive() {
     const t = activeTab();
     const owner = pinnedOwner(t?.id);
@@ -83,7 +122,7 @@ async function togglePinActive() {
 }
 
 async function openNode(n: PinNode) {
-    const tabId = await focusOrOpen(n.tabId, n.url ?? "about:blank");
+    const tabId = await focusOrOpen(n.tabId, n.url || "about:blank");
     if (tabId !== n.tabId) {
         await mutateSpace(list => { const f = [...walk(list)].find(x => x.id === n.id); if (f) f.tabId = tabId; });
         if (tabId != null) await safe(call("spaces:moveTab", tabId, activeSpace().id), "spaces:moveTab");
@@ -103,9 +142,23 @@ export async function duplicatePin(id: string | undefined, open = true) {
     if (n) await openNode(n);
 }
 
+/** ⌘ + 点击图标区 = “分离当前页”（pinned-icon-hover.md 结论 4：reset 动作带 Bool = ⌘ 位，⌘ 时 shouldSeparateCurrent = true；⚠ 来自符号片段，reducer 具体实现 ⛔ 源码未找到）。
+ *  按 shouldSeparateCurrent=true 语义的最小实现，reducer 源码未找到：当前页（原标签，状态 / 历史 / 选中不动）脱离固定项，变成普通标签（不再被固定项认领 → 回到 Today）；
+ *  固定项保持保存的 URL，改绑到一个按保存 URL 新开的后台标签（active:false，所以当前页的选中状态不变）。固定项没有保存的 URL / 当前页没打开则什么也不做。
+ *  细节 ⛔（Arc reducer 里是否 select 新页、新标签放哪一格、历史怎么带）一律不编。 */
+export async function separateCurrent(nodeId: string) {
+    const n = [...walk(spaceList())].find(x => x.id === nodeId);
+    const cur = getTab(n?.tabId);
+    if (!n?.url || !cur?.id) return;
+    const nt = await safe(chrome.tabs.create({ url: n.url, index: cur.index + 1, active: false, windowId: cur.windowId }), "tabs.create");
+    if (nt?.id == null) return;
+    await mutateSpace(list => { const f = [...walk(list)].find(x => x.id === nodeId); if (f) f.tabId = nt.id; });
+    await safe(call("spaces:moveTab", nt.id, activeSpace().id), "spaces:moveTab");
+}
+
 /** 固定标签是否已偏离固定的网址（忽略 #hash） */
 export function drifted(n: PinNode, tab?: chrome.tabs.Tab) {
-    const cur = tab?.url ?? tab?.pendingUrl;
+    const cur = tabUrl(tab);
     if (!cur || !n.url) return false;
     const norm = (u: string) => u.replace(/#.*$/, "").replace(/\/$/, "");
     return norm(cur) !== norm(n.url);
@@ -168,7 +221,7 @@ export async function handleDrop(data: string, target: { before?: string; after?
     if (data.startsWith("tab:")) {
         const tab = getTabs().find(t => t.id === Number(data.slice(4)));
         if (tab?.id == null) return;
-        await mutateSpace(list => { insertNode(list, { id: uid(), kind: "tab", url: tab.url, title: tab.title, tabId: tab.id }, target); });
+        await mutateSpace(list => { insertNode(list, pinNodeFromTab(tab, uid()), target); });
     } else if (data.startsWith("fav:")) {
         const f = favStore.get().items.find(i => i.id === data.slice(4));
         if (!f) return;
@@ -197,18 +250,19 @@ function renderNodes(list: PinNode[], depth: number): HTMLElement[] {
             renamed: !!n.customTitle,
             customIcon: n.customIcon,
             title: pinTitle(n, tab),
-            url: tab?.url ?? n.url, favIconUrl: tab?.favIconUrl,
+            url: tab?.url || n.url, favIconUrl: tab?.favIconUrl,
             active: tab?.active, open: !!tab, audible: tab?.audible, muted: tab?.mutedInfo?.muted, indent: depth,
             // 右按钮按动作选字形 / 文案（pinned-hover.md §F、R3）：已打开 → “−” “Close this item”；未打开 → “✕” “Archive this item”（Rea 的 ctx=1 分支没有「不显示」；点击仍是取消固定，文案与实际动作不一致 ⛔）
             closeAction: tab ? "close" : "archive",
             onClick: () => void openNode(n),
             onClose: () => (tab ? void safe(chrome.tabs.remove(tab.id!), "tabs.remove") : void unpin(n.id)),
-            onContextMenu: e => showContextMenu(e, "pinned", { itemId: n.id, tabId: tab?.id, url: tab?.url ?? n.url, title: n.customTitle ?? tab?.title ?? n.title }),
+            onContextMenu: e => showContextMenu(e, "pinned", { itemId: n.id, tabId: tab?.id, url: tab?.url || n.url, title: n.customTitle ?? tab?.title ?? n.title }),
             selectKey: `pin:${n.id}`,
             drifted: drifted(n, tab),
-            tabId: tab?.id,
-            // 点图标重置；⌘ 单击 = 当前页移到新标签，固定标签重置（Arc）
-            onIconClick: tab && drifted(n, tab) ? e => { if ((e.metaKey || e.ctrlKey) && tab.url) void safe(chrome.tabs.create({ url: tab.url, index: tab.index + 1, active: false }), "tabs.create"); resetNode(n.id); } : undefined,
+            savedUrl: n.url, // rel48 ①：偏离行图标区悬停时图标换成保存网址的 favicon（TabRow.syncIcon）；customIcon 行不换
+            tabId: tab?.id, tabUrl: tab ? (tab.url || tab.pendingUrl || "") : undefined, // 补丁 t903u-tab-switch v2
+            // 点图标区：普通单击 = 回到固定网址（resetNode，当前页导航回保存的 URL）；⌘ 单击 = 分离当前页（separateCurrent，见下；rel47 ⑦）
+            onIconClick: tab && drifted(n, tab) ? e => { if (e.metaKey) void separateCurrent(n.id); else resetNode(n.id); } : undefined,
             onRename: v => void renameNode(n.id, v),
             drag: { data: `pin:${n.id}`, onDrop: (data, before) => void handleDrop(data, before ? { before: n.id } : { after: n.id }) },
         });
@@ -267,8 +321,11 @@ export default definePlugin({
             // 组 6（urlbar-menus-followup.md「菜单定案」§4，out5/0x102ec5d7c.c L1196–1301）：右键菜单里没有 Reset / Unpin / Delete（§4.2，只在主菜单栏；命令 pin.reset / pin.toggle 保留）。
             // Close Tab(s) 只在选中项全是 Favorites 时出现（FUN_102ecb26c 要求 allFav）→ 固定区菜单没有。
             // 固定区 = Remove Pin（!allFav && allPinned && !anyLive，L134–140）。本菜单只作用于单个固定项；含 Live Folder 标签 / 混选 → Archive Tab(s) 的分支在多选菜单（multiSelect）里。
-            { id: "removePin", label: "pinned.removePin", run: t => unpin(t.itemId!, true) },
+            // rel65 ①：不再关标签——标签保持打开、回到 Today 顶部；没打开的只移除条目（removePinsKeepOpen）
+            { id: "removePin", label: "pinned.removePin", run: t => removePinsKeepOpen([t.itemId!]) },
         ],
+        // rel65 ②：Today 行右键「Pin Tab」（文案取 Arc 主菜单栏 “Pin Tab”，⌘D 同 pin.toggle；Arc 右键菜单本身没有此项，位置 ⛔ 源码未找到，放组 6 Archive Tab 之前）
+        tab: [{ id: "pin", label: "pinned.pinTab", command: "pin.toggle", visible: t => t.tabId != null && !pinnedOwner(t.tabId), run: t => pinFromToday(t.tabId) }],
     },
     background: {
         start: () => [addClaimProvider("PinnedTabs", () => {
@@ -277,15 +334,20 @@ export default definePlugin({
             return out;
         }),
         // 标签换 id（@api/Tabs discardKeep / 浏览器替换 / 重启映射）：固定项与文件夹里的项跟到新 id
-        onTabIdRemap(map => { if (!Object.values(pinnedStore.get().bySpace).some(l => [...walk(l)].some(n => n.tabId != null && map.has(n.tabId)))) return; return pinnedStore.update(x => { for (const l of Object.values(x.bySpace)) for (const n of walk(l)) if (n.tabId != null && map.has(n.tabId)) n.tabId = map.get(n.tabId); }); })],
+        onTabIdRemap(map => { if (!Object.values(pinnedStore.get().bySpace).some(l => [...walk(l)].some(n => n.tabId != null && map.has(n.tabId)))) return; return pinnedStore.update(x => { for (const l of Object.values(x.bySpace)) for (const n of walk(l)) if (n.tabId != null && map.has(n.tabId)) n.tabId = map.get(n.tabId); }); }),
+        // 补丁 rel63-fav-reattach（b）：固定项绑定的标签被关掉 → 清 tabId（回到未打开）；窗口整个关闭不清（closedTab.ts）
+        listen("tabs.onRemoved", (id, info) => {
+            if (!shouldClearOnRemoved(info) || !Object.values(pinnedStore.get().bySpace).some(l => [...walk(l)].some(n => n.tabId === id))) return;
+            void pinnedStore.update(x => { for (const l of Object.values(x.bySpace)) clearClosedTabId(walk(l), id); });
+        })],
     },
     panel: {
         start() {
             return [
                 pinnedStore.subscribe(refresh),
                 spacesStore.subscribe(refresh),
-                // 重启后按网址重新挂接固定项 / 收藏
-                (void reattachByUrl(), () => { }),
+                // 重启后按网址重新挂接固定项 / 收藏。补丁 rel63-fav-reattach（a）：只在真的浏览器重启后（storage.session 标记）跑，不再每次 panel.start 都跑
+                (void reattachOnRestart(), () => { }),
                 // 与 Chrome 自身的“固定标签”同步：在 Chrome 菜单里固定 → 进入当前空间的固定区；取消 Chrome 固定 → 移回 Today
                 (() => {
                     const onUpd = (id: number, ch: { pinned?: boolean }, tab: chrome.tabs.Tab) => {

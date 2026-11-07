@@ -5,7 +5,9 @@
 import { withEmptyFallback } from "@components/EmptyFavicon";
 import { arcTooltip } from "@components/ArcTooltip";
 import { tr } from "@api/i18n";
+import { parkedInterval } from "@api/ParkLife";
 import { h } from "@api/dom";
+import { folderOpening } from "@components/folderAnim";
 import { folderGlyph } from "@api/icons";
 import { addSection, refresh } from "@api/Slots";
 import { definePluginSettings } from "@api/Settings";
@@ -16,7 +18,8 @@ import { faviconUrl } from "@utils/misc";
 
 const settings = definePluginSettings({
     query: { type: OptionType.STRING, default: "", description: "live.query" },
-    token: { type: OptionType.STRING, default: "", description: "live.token" },
+    /* sensitive（补丁 livefolders-token-sensitive）：不进导出 / 自动快照，导入时沿用当前值；值仍存在 Settings.plugins.Tabs.token，升级不搬家 */
+    token: { type: OptionType.STRING, default: "", description: "live.token", sensitive: true },
 });
 
 /** 供空间菜单“实时文件夹 ›”使用：读取 / 设置 GitHub 查询（空 = 关闭） */
@@ -55,8 +58,8 @@ export default definePlugin({
     panel: {
         start() {
             void load();
-            const t = setInterval(() => void load(), 10 * 60000);
-            return [() => clearInterval(t), addSection("pinned", "LiveFolders", {
+            const t = parkedInterval(() => void load(), 10 * 60000); // 补丁 inpage-parked-timers-stop：停放时不再调度，切回若已到点补一次
+            return [t, addSection("pinned", "LiveFolders", {
                 order: 90,
                 render(el) {
                     if (!String(settings.store.query || "").trim()) return;
@@ -64,7 +67,8 @@ export default definePlugin({
                         h("span", { class: "arc-folder-icon" }, folderGlyph(!collapsed)),
                         h("span", { class: "arc-tab-title" }, tr("live.github", items.length)),
                         error ? h("small", { "data-tip": error }, "!") : null);
-                    el.append(h("div", { class: "arc-folder", "data-collapsed": String(collapsed) }, head, collapsed ? null : h("div", { class: "arc-folder-body" },
+                    const opening = folderOpening("live-folder", collapsed); // 折叠态也要记（展开那次才播动画）
+                    el.append(h("div", { class: "arc-folder", "data-collapsed": String(collapsed) }, head, collapsed ? null : h("div", { class: opening ? "arc-folder-body arc-folder-opening" : "arc-folder-body" },
                         items.map(i => arcTooltip(h("div", { class: "arc-tab arc-row", style: "padding-left:26px", onclick: () => void focusOrOpen(undefined, i.url) },
                             withEmptyFallback(h("img", { class: "arc-fav", src: faviconUrl(i.url), alt: "" }) as HTMLImageElement), h("span", { class: "arc-tab-title" }, i.title)) as HTMLElement, i.title, { delay: 1.5, anchor: "cursor" }) /* tooltip-row.md：仅标题、delay 1.5、anchor cursor；maxWidth ⛔ 文档仅标签行/Easel 行 500 */))));
                 },

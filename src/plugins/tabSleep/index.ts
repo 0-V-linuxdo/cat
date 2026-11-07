@@ -35,7 +35,7 @@ const settings = definePluginSettings({
     },
     skipHosts: { type: OptionType.STRING, description: "tabSleep.skipHosts", default: "" },
     keepPinned: { type: OptionType.BOOLEAN, description: "tabSleep.keepPinned", default: false },
-    closeTier: { type: OptionType.BOOLEAN, description: "tabSleep.closeTier", default: false },
+    closeTier: { type: OptionType.BOOLEAN, description: "tabSleep.closeTier", detail: "tabSleep.closeTier.detail", default: false },
     sleepAudible: { type: OptionType.BOOLEAN, description: "tabSleep.sleepAudible", default: false },
 });
 
@@ -108,10 +108,10 @@ async function reconcile() {
 export default definePlugin({
     name: "TabSleep",
     label: "plugin.tabSleep.label",
-    icon: "moon",
     description: "plugin.tabSleep.desc",
     authors: [Devs.ArcSidebar],
     tags: ["tabs"],
+    featureTags: ["tabSleep.tag.auto", "tabSleep.tag.now", "tabSleep.tag.keepAwake"],
     enabledByDefault: false, // 多出项（Arc 无面向用户的设置，sidebar-features.md:551–553）：默认关（audit-arc-diff-52193 多出项 #1）
     settings,
     commands: [{ id: "tabSleep.now", label: "tabSleep.cmdRun", context: "background", run: (a?: unknown) => sweep((a as { now?: number } | undefined)?.now) }],

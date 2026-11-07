@@ -14,7 +14,6 @@ const features = [SplitView, Peek, SiteControls];
 export default definePlugin({
     name: "Views",
     label: "plugin.views.label",
-    icon: "splitCols", // I-01 / S-04：不用手绘 views（Arc split-add-right.svg）
     description: "plugin.views.desc",
     authors: [Devs.ArcSidebar],
     tags: ["views"],

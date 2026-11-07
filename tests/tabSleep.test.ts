@@ -50,8 +50,10 @@ describe("标签休眠筛选", () => {
         expect(src).toMatch(/关闭还是归档源码未找到/);
         expect(src).toContain("两套独立机制");
         expect(STRINGS.zh["tabSleep.closeTier"]).toContain("归档");
-        expect(STRINGS.zh["tabSleep.closeTier"]).toContain("Arc 的处理方式源码未找到");
-        expect(STRINGS.en["tabSleep.closeTier"]).toContain("not found in source");
+        // 「源码未找到」注记原在设置行说明里（撑高整行），dialog-layering 补丁起移到悬停提示 detail
+        expect(STRINGS.zh["tabSleep.closeTier.detail"]).toContain("Arc 的处理方式源码未找到");
+        expect(STRINGS.zh["tabSleep.closeTier.detail"]).toContain("两套独立机制");
+        expect(STRINGS.en["tabSleep.closeTier.detail"]).toContain("not found in source");
     });
     test("Arc 常量与文档一致：discard 14400 s、保护 10 个、采样 300 s", async () => {
         expect(DEFAULT_IDLE_MIN * 60).toBe(14400);

@@ -6,6 +6,9 @@ export const STRINGS = {
     en: {
         "plugin.cleanUrls.label": "Clean URLs",
         "plugin.cleanUrls.desc": "Remove trackers from copied links",
+        "cleanUrls.tag.trackers": "Tracker Removal",
+        "cleanUrls.tag.extended": "Extended Rules",
+        "cleanUrls.tag.skip": "Skip Sites",
         "cleanUrls.extended": "Extended rules: Beyond Arc: more trackers, site rules (Google, Facebook…), all Amazon domains, keep Amazon search terms",
         "cleanUrls.extraParams": "Extra parameters to remove (comma-separated)",
         "cleanUrls.skipHosts": "Sites to leave alone (comma-separated)",
@@ -16,6 +19,9 @@ export const STRINGS = {
     zh: {
         "plugin.cleanUrls.label": "Clean URLs",
         "plugin.cleanUrls.desc": "复制链接时去掉追踪参数",
+        "cleanUrls.tag.trackers": "去除追踪参数",
+        "cleanUrls.tag.extended": "扩展规则",
+        "cleanUrls.tag.skip": "跳过站点",
         "cleanUrls.extended": "扩展规则：超出 Arc 的部分：更多追踪参数、Google/Facebook 等站点规则、各国 Amazon、保留 Amazon 搜索词",
         "cleanUrls.extraParams": "额外去除的参数（逗号分隔）",
         "cleanUrls.skipHosts": "不处理的站点（逗号分隔）",

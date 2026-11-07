@@ -166,7 +166,7 @@ function mountPage() {
             });
             // 静音按钮：图标只跟随面板 iframe 里媒体的真实 muted（内容脚本回报 muteState），不在按钮上自存状态
             const muteBtn = h("button", { "data-tip": tr("split.mutePane"), "data-test": "split:mute", onclick: () => {
-                frame.contentWindow?.postMessage({ arcSplit: "mute", on: !paneMuteState.get(frame) }, "*");
+                frame.contentWindow?.postMessage({ arcSplit: "mute", on: !paneMuteState.get(frame) }, "*"); // 面板可跳到任意源，targetOrigin 只能 "*"；负载只是静音开关，不含数据；回报端已核对 e.source
             } }, icon(splitMuteIcon(null), 14));
             frame.addEventListener("load", () => frame.contentWindow?.postMessage({ arcSplit: "muteQuery" }, "*"));
             muteButtons.set(frame, muteBtn);
@@ -261,11 +261,13 @@ export default definePlugin({
     content: {
         start() {
             // 在分屏面板里：⌘L 交给分屏页聚焦本面板地址栏；接收“静音本面板”
-            const inPane = window.top !== window && location.ancestorOrigins?.[location.ancestorOrigins.length - 1] === new URL(chrome.runtime.getURL("")).origin;
-            const onPaneKey = (e: KeyboardEvent) => { if (inPane && (e.metaKey || e.ctrlKey) && e.code === "KeyL") { e.preventDefault(); e.stopImmediatePropagation(); window.parent.postMessage({ arcSplit: "focusUrl" }, "*"); } };
+            const extOrigin = new URL(chrome.runtime.getURL("")).origin;
+            // 只认分屏页的直接子面板：父窗口源 = 扩展源（面板里再嵌的 iframe 不算面板，不转发 ⌘L、不收静音）
+            const inPane = window.top !== window && location.ancestorOrigins?.[0] === extOrigin;
+            const onPaneKey = (e: KeyboardEvent) => { if (inPane && (e.metaKey || e.ctrlKey) && e.code === "KeyL") { e.preventDefault(); e.stopImmediatePropagation(); window.parent.postMessage({ arcSplit: "focusUrl" }, extOrigin); } };
             let paneMuted = false;
             const applyMute = () => { for (const m of Array.from(document.querySelectorAll<HTMLMediaElement>("video,audio"))) m.muted = paneMuted; };
-            const report = () => window.parent.postMessage({ arcSplit: "muteState", muted: paneMutedOf(Array.from(document.querySelectorAll<HTMLMediaElement>("video,audio"), m => m.muted)) }, "*");
+            const report = () => window.parent.postMessage({ arcSplit: "muteState", muted: paneMutedOf(Array.from(document.querySelectorAll<HTMLMediaElement>("video,audio"), m => m.muted)) }, extOrigin); // targetOrigin 固定扩展源（同 rel66），不用 "*"
             const onPaneMsg = (e: MessageEvent) => {
                 if (!inPane || e.source !== window.parent) return;
                 const k = (e.data as { arcSplit?: string })?.arcSplit;

@@ -1,4 +1,4 @@
-/* 可选插件「Clean URLs」：复制链接（⇧⌘C / ⌥⇧⌘C / ⌃⇧⌘C、右键 Copy Link、Share）时去掉追踪参数。默认关闭。
+/* 可选插件「Clean URLs」：复制链接（⇧⌘C / ⌥⇧⌘C / ⌃⇧⌘C、右键 Copy Link、Share）时去掉追踪参数。默认开启（enabledByDefault: true；用户设置页里显式开 / 关过的值优先，不被覆盖）。
  * 通过核心的 URL 变换管道（@api/UrlTransforms）生效。默认只用 Arc 的规则；超出 Arc 的规则在「扩展规则」开关里（默认关）。
  *
  * 快捷键 toast：三个快捷键是核心 tabActions 的 background 命令，直接调 applyUrlTransforms + copyText，不经过 copyUrlWithToast。
@@ -8,6 +8,7 @@
  * 提示位置：该窗口的侧边栏。侧边栏关着时 Arc 的提示显示在哪里源码未找到（toast-spec.md：复制链接 toast 的 location 源码未找到）→ 维持现状，不提示。
  * 需要核心提供（替换掉这里的命令包装）：copy 命令统一返回 { ok, text, changed, toastKey }，或广播事件 "urlCopied" { windowId, tabId, ok, changed, toastKey }。 */
 import { safe } from "@api/ErrorLog";
+import { currentWindow } from "@api/HostMode";
 import { commands } from "@api/Commands";
 import { tr } from "@api/i18n";
 import { toast } from "@api/PanelShell";
@@ -68,10 +69,11 @@ function hookCommands(): () => void {
 export default definePlugin({
     name: "CleanUrls",
     label: "plugin.cleanUrls.label",
-    icon: "link",
+    enabledByDefault: true, // 默认开：只对从未显式设置过本开关的情况生效（isPluginEnabled：Settings.plugins.CleanUrls.enabled ?? enabledByDefault）；用户手动关闭写入 enabled:false，不被覆盖。Arc 的 Copy URL 按钮 / 复制链接本来就总是清理（clean-urls.md §2 开关 ⛔ 源码未找到，“看起来一直开启”）
     description: "plugin.cleanUrls.desc",
     authors: [Devs.ArcSidebar],
     tags: ["tabs"],
+    featureTags: ["cleanUrls.tag.trackers", "cleanUrls.tag.extended", "cleanUrls.tag.skip"],
     settings,
     background: {
         start() { return [registerUrlTransform("copy", bgTransform), hookCommands()]; },
@@ -79,7 +81,7 @@ export default definePlugin({
     panel: {
         start() {
             let myWin: number | undefined;
-            void safe(chrome.windows.getCurrent().then(w => { myWin = w.id; }), "windows.getCurrent");
+            void safe(currentWindow().then(w => { myWin = w.id; }), "windows.getCurrent");
             const onMsg = (m: { type?: string; windowId?: number }, _s: unknown, respond: (r: unknown) => void) => {
                 if (m?.type !== TOAST_MSG || myWin == null || m.windowId !== myWin) return; // 不是本窗口：不响应，交给别人
                 toast(tr(TOAST_KEY)); respond(true);

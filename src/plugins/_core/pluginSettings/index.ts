@@ -26,7 +26,7 @@ export const coreSettings = definePluginSettings({
 });
 
 function renderList(box: HTMLElement) {
-    const search = h("input", { class: "arc-input", placeholder: tr("settings.searchPlugins"), oninput: () => draw() });
+    const search = h("input", { class: "arc-input", placeholder: tr("settings.searchPlugins", filterPlugins("all", "").length), oninput: () => draw() });
     let category: PluginCategory = "all";
     let state: ListFilter = "all";
     const categoryDd = Dropdown({ options: PLUGIN_CATEGORY_TABS.map(t => ({ label: t.label, value: t.id })), value: category, test: "category", title: tr("settings.category"), onChange: v => { category = v; draw(); } });
@@ -34,6 +34,7 @@ function renderList(box: HTMLElement) {
     const list = h("div", { class: "arc-plugin-list" });
     const draw = () => {
         const shown = filterPlugins(category, search.value, state);
+        search.placeholder = tr("settings.searchPlugins", filterPlugins(category, "", state).length); // Void++ PluginsTab.tsx:220：数量 = 当前分类（+ 启用筛选）下的插件数，不含搜索
         list.replaceChildren(...shown.map(p => PluginCard(p, { onChange: draw, onMessage: toast })), shown.length ? "" : h("div", { class: "arc-hint" }, tr("settings.noMatch")));
     };
     box.append(

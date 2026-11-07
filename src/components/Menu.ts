@@ -213,14 +213,28 @@ export function openPanel(at: { x: number; y: number }, content: HTMLElement[], 
     return menu;
 }
 
-/** 下拉框（替代原生 <select>）：按钮显示当前值，点击弹出菜单 */
+/** 下拉按钮当前显示的文案（按钮文字与 data-tip 的同一个来源）：tr(选中项 label)；值无匹配 / 无选项 → ""（绝不是 "undefined"） */
+export function dropdownShownLabel(options: readonly { label: string; value: unknown }[], value: unknown): string {
+    return tr(options.find(o => o.value === value)?.label);
+}
+
+/** 补丁 inpage-settings-copy-fix：下拉**按钮上**的文字。选中项带 short（可选短标签）就用它，否则 = dropdownShownLabel（与以前一致）；菜单项 / 悬停提示仍用完整 label。 */
+export function dropdownButtonLabel(options: readonly { label: string; value: unknown; short?: string }[], value: unknown): string {
+    const o = options.find(x => x.value === value);
+    return o?.short ? tr(o.short) : dropdownShownLabel(options, value);
+}
+
+/** 下拉框（替代原生 <select>）：按钮显示当前值，点击弹出菜单。
+ * title = 固定提示（data-tip）；tipShown = 提示改为「当前显示的完整文案」（按钮文字是单行省略号，窄按钮会截断：设置页 window 项 zh 342px / en 450px，按钮可用 160px），
+ * 随选中项变化；同时给 title 时 title 优先。提示走 data-tip（ArcTooltip；不写原生 title，否则会出现两个提示，见 selftest「没有元素同时带原生 title 和 Cat/Arc 提示」）。 */
 export function Dropdown<V extends string | number | boolean>(opts: {
-    options: readonly { label: string; value: V }[];
+    options: readonly { label: string; value: V; short?: string }[];
     value: V | undefined;
     onChange(v: V): void;
     disabled?: boolean;
     test?: string;
     title?: string;
+    tipShown?: boolean;
 }) {
     let value = opts.value;
     const text = h("span", { class: "arc-dropdown-label" });
@@ -228,7 +242,11 @@ export function Dropdown<V extends string | number | boolean>(opts: {
         type: "button", class: "arc-field arc-dropdown", disabled: !!opts.disabled, "data-tip": opts.title,
         "data-test": opts.test, "aria-haspopup": "menu",
     }, text, icon("chevronDownRegular")); // 下拉箭头 = SF chevron.down Regular（⛔ suggestion，ionicons-to-arc.md L39）；chevronDown 现为折叠箭头（Bold 旋转）
-    const sync = () => { text.textContent = tr(opts.options.find(o => o.value === value)?.label); btn.dataset.value = String(value); };
+    const sync = () => {
+        const shown = dropdownShownLabel(opts.options, value);
+        text.textContent = dropdownButtonLabel(opts.options, value); btn.dataset.value = String(value); // 按钮文字可用短标签；data-tip 仍是整句 shown
+        if (opts.tipShown && !opts.title && shown) btn.setAttribute("data-tip", shown); // 没有可显示的文案 → 不加属性（不会出现 "undefined" / 空 tip）
+    };
     sync();
     btn.addEventListener("click", e => {
         e.stopPropagation();

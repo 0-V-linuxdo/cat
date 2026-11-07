@@ -1,14 +1,16 @@
 /* Themes（§5.3）：按当前 Space 着色。每个空间可用“编辑主题颜色…”打开自定义主题选择器
  * （移植自 Zen Browser 的 ZenGradientGenerator，MPL-2.0，见 gradient.ts / picker.ts）：
- * 颜色平面 1–3 个颜色（和声）、自动 / 浅色 / 深色、颗粒、浓度；自动模式按对比度选文字颜色。
+ * 颜色平面 1–3 个颜色（和声）、自动（跟随系统）/ 浅色 / 深色、颗粒、浓度；自动 = 明暗跟随系统（见 scheme.ts）。
  * 主题存在设置存储（Themes.spaceThemes），所有上下文实时同步。没有自定义主题的空间沿用空间色 + 全局渐变。 */
 import { safe } from "@api/ErrorLog";
+import { currentWindow } from "@api/HostMode";
 import { refresh } from "@api/Slots";
 import { definePluginSettings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { activeSpace, COLOR_HEX, spacesStore, themePickerHook } from "@plugins/spaces/spaceManager/store";
-import { DEFAULT_THEME, getGradient, type GradientTheme, hexToRgb, prefersLightText, rgbCss, themeColors } from "./gradient";
+import { DEFAULT_THEME, getGradient, type GradientTheme, hexToRgb, rgbCss, themeColors } from "./gradient";
+import { resolveSpaceScheme } from "./scheme";
 import { openThemePicker } from "./picker";
 import { sidebarOnly } from "@api/Commands";
 import { getWindowId } from "@plugins/_core/tabState";
@@ -39,22 +41,22 @@ function apply() {
     const sp = activeSpace();
     const custom = spaceTheme(sp.id);
     const colors = custom ? themeColors(custom) : [];
-    const globalDark = settings.store.mode === "dark" || (settings.store.mode === "auto" && systemDark());
+    // [system-color-scheme/4] 明暗只在这里决定、data-theme 只在这里写一次：自定义 auto 跟全局 mode（mode=auto 即跟系统，不钉死）
+    const sc = resolveSpaceScheme(custom?.scheme, settings.store.mode, systemDark());
+    root.dataset.theme = sc.theme;
     root.dataset.spaceColor = sp.color;
     // H-02：颗粒层只在开启时显示（隐藏规则在 spaces/style.ts，按 data-dark-grain）
     root.dataset.darkGrain = String(!!settings.store.darkGrain);
     // H-01：关掉开关时立即撤掉变暗
     if (!settings.store.blurDim) delete root.dataset.blurred;
     if (custom && colors.length) {
-        // 自定义主题：Zen 的渐变公式；自动模式下按主色与底色混合后的对比度决定浅 / 深（文字颜色随之切换）
-        const dark = custom.scheme === "dark" || (custom.scheme === "auto" && prefersLightText(colors, globalDark ? BASE_DARK : BASE_LIGHT, custom.opacity));
-        root.dataset.theme = dark ? "dark" : "light";
+        // 自定义主题：Zen 的渐变公式；明暗见 scheme.ts（auto 跟系统，显式浅 / 深钉死）
+        const dark = sc.dark;
         root.style.setProperty("--arc-space", rgbCss(colors[0]));
         root.style.setProperty("--arc-tint", getGradient(colors, dark ? BASE_DARK : BASE_LIGHT, custom.opacity));
         root.style.setProperty("--arc-k", "0");
     } else {
         const hex = COLOR_HEX[sp.color] ?? COLOR_HEX.blue;
-        root.dataset.theme = custom && custom.scheme !== "auto" ? custom.scheme : String(settings.store.mode);
         root.style.setProperty("--arc-space", hex);
         root.style.setProperty("--arc-tint", settings.store.gradient
             ? `linear-gradient(180deg, color-mix(in srgb, ${hex} calc(var(--arc-tint-k) * 1%), var(--arc-base)) 0%, color-mix(in srgb, ${hex} calc(var(--arc-tint-k) * .4%), var(--arc-base)) 100%)`
@@ -124,7 +126,7 @@ export default definePlugin({
             // H-01：窗口失焦时侧边栏变暗——⛔ 无 Rea 出处，仅在设置 blurDim 开启时生效（默认关）
             const onFocus = (id: number) => {
                 if (!settings.store.blurDim) { delete document.documentElement.dataset.blurred; return; }
-                void safe(chrome.windows.getCurrent().then(w => { if (settings.store.blurDim) document.documentElement.dataset.blurred = String(id !== w.id); }), "windows.getCurrent");
+                void safe(currentWindow().then(w => { if (settings.store.blurDim) document.documentElement.dataset.blurred = String(id !== w.id); }), "windows.getCurrent");
             };
             chrome.windows.onFocusChanged.addListener(onFocus);
             themePickerHook.open = openPicker;

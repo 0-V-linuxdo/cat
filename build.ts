@@ -74,14 +74,14 @@ rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 
 // 构建时刻（只取一次）：数字 version 第 4 段 = 构建序号；version_name = Asia/Shanghai 构建时间 `YYYY-MM-DD｜HH:MM:SS`（全角竖线 U+FF5C，扩展管理页显示它）
-const buildNow = Date.now();
+const buildNow = 1794047116063; // rel67 fixed input timestamp (Asia/Shanghai)
 const manifestVersion = `${pkg.version}.${Math.floor((buildNow - Date.UTC(2026, 0, 1)) / 480000) % 65535}`;
 const versionName = (() => {
     const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(buildNow)).map(x => [x.type, x.value]));
     return `${p.year}-${p.month}-${p.day}\uFF5C${p.hour === "24" ? "00" : p.hour}:${p.minute}:${p.second}`;
 })();
 const result = await Bun.build({
-    entrypoints: [...["background", "sidepanel", "content", "page", "options", "offscreen"].map(n => join(SRC, "entries", `${n}.ts`)), ...(withSelftest ? [join(SRC, "selftest", "selftest.ts")] : [])],
+    entrypoints: [...["background", "sidepanel", "content", "page", "options", "options-theme-head", "offscreen"].map(n => join(SRC, "entries", `${n}.ts`)), ...(withSelftest ? [join(SRC, "selftest", "selftest.ts")] : [])],
     outdir: OUT,
     naming: "[name].[ext]",
     target: "browser",

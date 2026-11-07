@@ -11,10 +11,12 @@ import { ICON_NAMES, icon as mkIcon, SF_GLYPHS as SF } from "@api/icons";
 import { ARC_ICON_SOURCE } from "@api/arcIcons";
 import { ION_GLYPHS } from "@api/ionGlyphs";
 import { ION_SYMBOLS } from "@api/ionSymbols";
+import { cardIconOf, PLUGIN_CARD_ICON } from "@components/settings/utils";
 import { LOCALES, registerLocale, tr as trLocal } from "@api/i18n";
 import { STRINGS as FAV_STRINGS } from "@plugins/spaces/favorites/i18n"; // 收藏插件自带文案（fav.changeIcon / fav.copyLinks…）：侧栏里由 registerLocale 合并，自测页这份 LOCALES 里没有
+import { ClockWatch, describeEvent, effectiveElapsed, raceWithClockTimeout } from "./clockWatch";
 import { crossSite, decideClick, newTargetToPeek, site } from "@plugins/views/peek/logic";
-type Row = { name: string; status: "pass" | "fail" | "skip"; detail: string };
+type Row = { name: string; status: "pass" | "fail" | "skip"; detail: string; /** 该项完成时的 Asia/Shanghai 墙钟（YYYY-MM-DD HH:mm:ss.SSS），给 [时钟] 冻结假阳性对照 */ at: string };
 
 /** 自测页内统一的“非致命”catch：记到 globalThis.__stCaught 并 console.info——不用 console.error / arc-errlog，免得 harness 的错误日志检查误报。返回 fallback，行为与原空 catch 一致。 */
 const stCaught: { ctx: string; message: string; stack?: string }[] = ((globalThis as any).__stCaught ??= []);
@@ -23,6 +25,18 @@ function stCatch<T = undefined>(ctx: string, fallback?: T) {
 }
 
 const rows: Row[] = [];
+
+/** Asia/Shanghai 墙钟完成时刻：YYYY-MM-DD HH:mm:ss.SSS（毫秒取自瞬时；与 harness 日志时区一致） */
+function wallStamp(ms = Date.now()): string {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).formatToParts(new Date(ms)).filter(p => p.type !== "literal").map(p => [p.type, p.value]));
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}.${String(ms % 1000).padStart(3, "0")}`;
+}
+function pushRow(name: string, status: Row["status"], detail: string) {
+    rows.push({ name, status, detail, at: wallStamp() });
+}
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const isMac = /Mac/.test(navigator.platform);
 const MOD = isMac ? "metaKey" : "ctrlKey";
@@ -32,7 +46,7 @@ let selfWin = 0;
 
 function render() {
     const t = document.getElementById("t")!;
-    t.innerHTML = rows.map(r => `<tr><td class="${r.status}">${r.status === "pass" ? "✅" : r.status === "fail" ? "❌" : "⚠️"}</td><td class="n">${r.name}</td><td class="d">${r.detail.replace(/</g, "&lt;").slice(0, 400)}</td></tr>`).join("");
+    t.innerHTML = rows.map(r => `<tr><td class="${r.status}">${r.status === "pass" ? "✅" : r.status === "fail" ? "❌" : "⚠️"}</td><td class="at">${r.at}</td><td class="n">${r.name}</td><td class="d">${r.detail.replace(/</g, "&lt;").slice(0, 400)}</td></tr>`).join("");
     const p = rows.filter(r => r.status === "pass").length, f = rows.filter(r => r.status === "fail").length, s = rows.filter(r => r.status === "skip").length;
     document.getElementById("sum")!.textContent = `${p} 通过 · ${f} 失败 · ${s} 无法测试/部分`;
 }
@@ -42,15 +56,28 @@ const CORE7 = ["Adaptive", "Command", "Data", "Library", "Spaces", "Tabs", "View
 
 const TEST_TIMEOUT = 30_000;
 const TEARDOWN_CAP = 10_000;
+/* rel45：时钟跳变 / 冻结检测（VM 快照 / 恢复会让 Date.now() 跳变、单调时钟停滞或补跳）。单项超时按单调时钟差并扣掉冻结时间判定，
+ * 冻结 / 恢复后到期的定时器不再直接判“单项超时”而是顺延剩余有效时间（最多 2 次，写进 __retried）；真超时（无时钟事件）照旧失败。
+ * 页面被隐藏时定时器会被浏览器节流（≥1s），这时的间隔不是冻结：只重置采样基准，不记事件。 */
+const clockW = new ClockWatch({ wall: () => Date.now(), mono: () => performance.now() });
+clockW.onEvent = e => console.info("[selftest] 时钟跳变", describeEvent(e));
+setInterval(() => { if (document.hidden) clockW.resync(); else clockW.sample(); }, clockW.interval);
+/** harness 卡死 / 超时分支读取：阶段、可见性、wall−mono 漂移、时钟事件 */
+(globalThis as any).__clockDiag = () => ({ visibility: document.visibilityState, hasFocus: document.hasFocus(), current: (globalThis as any).__current ?? null, stage: (globalThis as any).__stage ?? "", wallMinusMonoMs: clockW.skewMs(), ...clockW.summary() });
 async function test(name: string, fn: () => Promise<unknown>) {
     (globalThis as any).__current = name; // 框架看门狗据此报出“卡在哪一项”
+    (globalThis as any).__stage = ""; // rel43：用例内可用 stage() 写“当前阶段”，单项超时的报错里带上，区分“卡在哪个 await”
     const startedBefore = P ? Object.values(P.ArcSidebar.plugins as Record<string, any>).filter((pl: any) => pl.started).map((pl: any) => pl.name as string) : [];
     try {
         // 单项超时 30s：一项卡住不拖垮整轮（记为失败并写明测试名，继续后面的测试）
-        const d = await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error(`单项超时 ${TEST_TIMEOUT / 1000}s：${name}`)), TEST_TIMEOUT))]);
-        rows.push({ name, status: "pass", detail: typeof d === "string" ? d : JSON.stringify(d ?? "") });
+        const d = await raceWithClockTimeout(fn(), {
+            ms: TEST_TIMEOUT, watch: clockW, maxExt: 2,
+            mkError: i => new Error(`单项超时 ${TEST_TIMEOUT / 1000}s：${name}${(globalThis as any).__stage ? `（最后阶段：${(globalThis as any).__stage}）` : ""}${i.events.length ? `（期间检测到时钟跳变 / 冻结 ${i.events.length} 次，顺延 ${i.extensions} 次后仍超时，有效耗时 ${Math.round(i.effective)}ms：${i.events.slice(-2).map(describeEvent).join("；")}）` : ""}`),
+            onExtend: i => { const m = `时钟跳变顺延「${name}」第 ${i.extension}/2 次（有效耗时 ${Math.round(i.effective)}ms < ${TEST_TIMEOUT}ms；${i.events.slice(-1).map(describeEvent).join("")}）`; retried.push(m); console.info("[selftest]", m); },
+        });
+        pushRow(name, "pass", typeof d === "string" ? d : JSON.stringify(d ?? ""));
     } catch (e: any) {
-        rows.push({ name, status: e instanceof Skip ? "skip" : "fail", detail: String(e?.message ?? e) });
+        pushRow(name, e instanceof Skip ? "skip" : "fail", String(e?.message ?? e));
     }
     // 每项结束后恢复被本项停掉的插件（否则后面的命令变成 unknown/disabled）。
     // 总上限 TEARDOWN_CAP：原先逐个最多等 3s、无总上限。旧 reloadPanel 可能拿到正在卸载的旧窗口，对它调 setPluginOrFeature 的 Promise 永不 settle，
@@ -63,9 +90,9 @@ async function test(name: string, fn: () => Promise<unknown>) {
         if (P && P.document?.defaultView && notStarted().length) {
             await Promise.race([restore(), sleep(TEARDOWN_CAP)]);
             const left = notStarted();
-            if (left.length) rows.push({ name: `收尾 · ${name}`, status: "fail", detail: `收尾 ${TEARDOWN_CAP / 1000}s 内这些插件没确认恢复启动：${left.join(", ")}` });
+            if (left.length) pushRow(`收尾 · ${name}`, "fail", `收尾 ${TEARDOWN_CAP / 1000}s 内这些插件没确认恢复启动：${left.join(", ")}`);
         }
-    } catch (e: any) { rows.push({ name: `收尾 · ${name}`, status: "fail", detail: `收尾异常：${String(e?.message ?? e)}` }); }
+    } catch (e: any) { pushRow(`收尾 · ${name}`, "fail", `收尾异常：${String(e?.message ?? e)}`); }
     (globalThis as any).__current = null;
     render();
     (globalThis as any).__results = rows;
@@ -74,10 +101,18 @@ function expect(cond: unknown, msg: string, detail?: unknown): asserts cond {
     if (!cond) throw new Error(`${msg}${detail !== undefined ? " · " + JSON.stringify(detail) : ""}`);
 }
 async function until<T>(fn: () => T | Promise<T>, ms = 4000): Promise<T> {
-    const end = Date.now() + ms;
+    /* rel45：单调时钟（wall-clock 跳变不再让等待提前 / 无限延后）。
+     * rel51-x06：再扣掉 ClockWatch 检测到的冻结 / 进程停顿（VM 快照 / 恢复时 performance.now() 会补跳几十~几百秒，原先的固定 deadline 瞬间过期 → 菜单刚要渲染就判“没等到”）；
+     * 每轮判定前先 clockW.sample()（定时器顺序不保证 ClockWatch 的采样先于这里的 sleep 返回）；到期后再给 fn 一次最后机会（冻结恢复后 rAF / 渲染才刚排上）。 */
+    const t0 = performance.now(), mark = clockW.mark();
     let v: T;
-    do { v = await fn(); if (v) return v; await sleep(150); } while (Date.now() < end);
-    return v;
+    for (;;) {
+        v = await fn(); if (v) return v;
+        await sleep(150);
+        clockW.sample();
+        if (effectiveElapsed(performance.now() - t0, clockW.since(mark)) >= ms) break;
+    }
+    return await fn();
 }
 const rpc = async <T = any>(method: string, ...args: unknown[]): Promise<T> => {
     const r = await chrome.runtime.sendMessage({ type: "arc-sidebar:rpc", method, args });
@@ -150,6 +185,10 @@ async function newTab(url: string, active = false) {
     return t;
 }
 const backToSelf = () => chrome.tabs.update(selfTabId, { active: true });
+/** rel43：记录用例当前阶段（带相对毫秒），单项超时的报错会带上最后一个阶段 */
+const stageT0 = () => { const t0 = performance.now(); return (s: string) => { (globalThis as any).__stage = `${s} @${Math.round(performance.now() - t0)}ms`; }; };
+/** rel43：给没有自带超时的 await（chrome.tabs.create 等）加上限，超时抛出带名字的错误（不留悬空 rejection） */
+const within = <T,>(p: Promise<T>, ms: number, what: string) => new Promise<T>((res, rej) => { const h = setTimeout(() => rej(new Error(`${what} 超过 ${ms}ms 没返回`)), ms); p.then(v => { clearTimeout(h); res(v); }, e => { clearTimeout(h); rej(e); }); });
 /** 53090 起标签右键菜单不再有「固定到当前空间」（tabActions/index.ts:72-73，Cat 定）：改走真实入口——激活该标签后跑 pin.toggle（即 Mod+D），再回到自测页 */
 const pinRow = async (el: Element | null | undefined) => {
     const sel = (el as HTMLElement | null | undefined)?.dataset?.sel ?? "";
@@ -185,7 +224,7 @@ async function main() {
         await sleep(300);
     }
     P = await until(() => (frame.contentWindow as any)?.ArcSidebar?.plugins?.TodayTabs?.started && frame.contentWindow, 8000);
-    if (!P) { rows.push({ name: "加载侧边栏 iframe", status: "fail", detail: "超时" }); render(); return; }
+    if (!P) { pushRow("加载侧边栏 iframe", "fail", "超时"); render(); (globalThis as any).__results = rows; return; }
     D = P.document;
     P.prompt = () => (globalThis as any).__promptAnswer ?? "SelfTest";
     P.confirm = () => true;
@@ -247,8 +286,8 @@ async function main() {
         const behavior = await chrome.sidePanel.getPanelBehavior();
         const popupGone = await fetch("popup.html").then(r => !r.ok, () => true);
         const cmds = await chrome.commands.getAll();
-        expect(archiveIcon && !emojiIcons && rightmost && gap < 16 && !gear && !man.action?.default_popup && behavior.openPanelOnActionClick && popupGone && cmds.some(c => c.name === "_execute_action") && man.options_ui?.page, "底栏 / 工具栏按钮不正确", { rightmost, gap, gear, behavior, popupGone });
-        return { gap: Math.round(gap), action: "click = open side panel; no popup" };
+        expect(archiveIcon && !emojiIcons && rightmost && gap < 16 && !gear && !man.action?.default_popup && behavior.openPanelOnActionClick === false && popupGone && cmds.some(c => c.name === "_execute_action") && man.options_ui?.page, "底栏 / 工具栏按钮不正确", { rightmost, gap, gear, behavior, popupGone });
+        return { gap: Math.round(gap), action: "click = action.onClicked → inpage toggle / native toggle by page kind; no popup; openPanelOnActionClick=false" };
     });
 
     await test("底栏无滚动条、不裁切（rel35：实机 53120 的底部“滚动条”= 贴窗口底边的 .arc-overflow 指示条）", async () => {
@@ -894,7 +933,8 @@ async function main() {
             // 固定项
             await pinRow(row(a.url, ".arc-today"));
             await probe("p", () => row(a.url, ".arc-pinned") ?? null);
-            const pr2 = row(a.url, ".arc-pinned"); if (pr2) await ctxMenu(pr2, zhL("pinned.removePin")); // 移除固定会关掉标签：收藏另开一个发声标签
+            const pr2 = row(a.url, ".arc-pinned"); if (pr2) await ctxMenu(pr2, zhL("pinned.removePin")); // 收藏另开一个发声标签
+            await chrome.tabs.remove(a.t.id!).catch(() => { /* 已关 */ }); // rel65 ①：移除固定不再关标签 → 这里自己关（保持原来的「只剩收藏一个发声标签」）
             b = await audibleTab("m18f"); if (!b) throw new Skip(NO_AUDIO);
             const f0 = (await data<any>("favorites"))?.items?.length ?? 0;
             const { tile } = await favFor(b.url);
@@ -1208,6 +1248,86 @@ async function main() {
         const sdOk = shape.some(s => s === "split,dup,moveTo") && m.find(x => x.t === "split")?.l === zhL("split.withCurrent") && m.find(x => x.t === "dup")?.l === zhL("tab.duplicate");
         expect(sdOk && m.find(x => x.t === "moveTo")?.l === zhL("tab.moveTo") && m.find(x => x.t === "close")?.l === zhL("tab.archiveTab") && !gone.length, "标签菜单不符", { menu: m.map(x => `${x.t}=${x.l}`), shape, gone });
         return Ls.join(" / ");
+    });
+
+    /* —— rel65-pin-unpin（用户 11/2 定，Arc 行为）：① Remove Pin 不关标签 → 回到 Today 顶部、不进最近关闭；没打开的只移除条目 ② Today 右键「固定标签」= 拖进固定区；两者 ⌘Z 撤销 —— */
+    const undoTop = async () => ((await data<any>("undo"))?.stack ?? []).at(-1) as { kind: string; label: string; data: any } | undefined;
+    const closedRecently = async (u: string, sinceSec: number) => (await chrome.sessions.getRecentlyClosed({ maxResults: 25 }).catch(() => [] as chrome.sessions.Session[]) /* 预期失败：没有 sessions → 当作没有 */).some(x => (x.lastModified ?? 0) >= sinceSec && x.tab?.url === u);
+
+    await test("rel65 ① 固定行右键「移除固定」：标签保持打开、回到 Today 顶部，不进最近关闭；Mod+Z 恢复固定", async () => {
+        await clearSel();
+        const u = U("r65rm"); const t = await newTab(u);
+        await pinRow((await until(() => row(u, ".arc-today")))!);
+        const pr = await until(() => row(u, ".arc-pinned"), 3000);
+        expect(pr, "pin.toggle 没固定 r65rm");
+        const since = Math.floor(Date.now() / 1000) - 1;
+        await ctxMenu(pr!, zhL("pinned.removePin"));
+        const gone = await until(async () => !walkAll(await pinnedNodes()).some(n => n.url === u), 3000).catch(() => false) /* 预期失败：下面断言 */;
+        const inToday = await until(() => row(u, ".arc-today"), 3000).catch(() => null) /* 预期失败：下面断言 */;
+        const alive = !!(await chrome.tabs.get(t.id!).catch(() => null) /* 预期失败：标签被关了 → 断言失败 */);
+        const top = await until(() => $$(".arc-today .arc-tab")[0] === row(u, ".arc-today"), 2000).catch(() => false) /* 预期失败：下面断言 */;
+        const recent = await closedRecently(u, since);
+        const ut = await undoTop();
+        const undoOk = ut?.kind === "store" && ut.label === zhL("pinned.removePin");
+        key("z", "KeyZ", { [MOD]: true });
+        const back = await until(() => !!row(u, ".arc-pinned") && !row(u, ".arc-today"), 3000).catch(() => false) /* 预期失败：下面断言 */;
+        const backAlive = !!(await chrome.tabs.get(t.id!).catch(() => null) /* 预期失败 */);
+        // 清理：再移除一次（标签回 Today）然后关掉
+        const p2 = row(u, ".arc-pinned"); if (p2) await ctxMenu(p2, zhL("pinned.removePin")).catch(stCatch("removePin", undefined));
+        await until(async () => !walkAll(await pinnedNodes()).some(n => n.url === u), 3000).catch(() => false) /* 清理 */;
+        await closeByUrl(u);
+        const f = { gone, inToday: !!inToday, alive, top, today: $$(".arc-today .arc-tab").slice(0, 3).map(x => x.dataset.sel), recent, undoTop: ut && { kind: ut.kind, label: ut.label }, back, backAlive };
+        expect(gone && !!inToday && alive && top, "移除固定后标签没保持打开 / 没回到 Today 顶部", f);
+        expect(!recent, "移除固定把标签送进了最近关闭", f);
+        expect(undoOk && back && backAlive, "Mod+Z 没把它恢复成固定项（撤销栈顶应为 store「移除固定」）", f);
+        return `移除固定 → Today 第 1 行、标签仍开着、最近关闭里没有 → Mod+Z 回到固定区`;
+    });
+
+    await test("rel65 ① 未打开的固定项：「移除固定」只移除条目，不新开标签", async () => {
+        await clearSel();
+        const u = U("r65saved"); const t = await newTab(u);
+        await pinRow((await until(() => row(u, ".arc-today")))!);
+        const pr = () => row(u, ".arc-pinned") ?? null;
+        expect(await until(() => pr(), 3000), "pin.toggle 没固定 r65saved");
+        await chrome.tabs.remove(t.id!).catch(() => { /* 已关 */ }); await settleClosed(u, pr);
+        const n0 = (await chrome.tabs.query({})).length;
+        await ctxMenu(pr()!, zhL("pinned.removePin"));
+        const gone = await until(async () => !walkAll(await pinnedNodes()).some(n => n.url === u) && !pr(), 3000).catch(() => false) /* 预期失败：下面断言 */;
+        await sleep(400);
+        const opened = (await chrome.tabs.query({ url: u })).length, n1 = (await chrome.tabs.query({})).length;
+        await closeByUrl(u);
+        expect(gone && opened === 0 && n1 === n0 && !row(u, ".arc-today"), "未打开的固定项：移除固定后条目还在 / 新开了标签", { gone, opened, n0, n1 });
+        return "条目移除，没有新标签";
+    });
+
+    await test("rel65 ② Today 行右键「固定标签」（组 6，归档标签之前）= 拖进固定区：放到固定区末尾、离开 Today；Mod+Z 退回 Today", async () => {
+        await clearSel();
+        const u = U("r65pin"); const t = await newTab(u);
+        const tr0 = (await until(() => row(u, ".arc-today")))!;
+        ctx(tr0); await until(() => menuNow().length > 0, 2000);
+        const groups = menuGroups(); await closeMenu();
+        const g6 = groups.find(g => g.some(x => x.t === "pin")) ?? [];
+        const lbl = g6.find(x => x.t === "pin")?.l;
+        const placeOk = g6.map(x => x.t).join(",").startsWith("pin,close") && lbl === zhL("pinned.pinTab");
+        const lens0 = Object.fromEntries(Object.entries((await data<any>("pinned"))?.bySpace ?? {}).map(([k, l]) => [k, (l as any[]).length]));
+        const clicked = await clickItem(row(u, ".arc-today")!, "pin");
+        const pinned = await until(() => !!row(u, ".arc-pinned") && !row(u, ".arc-today"), 3000).catch(() => false) /* 预期失败：下面断言 */;
+        const [sp, l1] = Object.entries((await data<any>("pinned"))?.bySpace ?? {}).find(([, l]) => (l as any[]).some((n: any) => n.url === u)) ?? ["", []];
+        const list = l1 as any[];
+        const atEnd = list.length === (lens0[sp] ?? 0) + 1 && list.at(-1)?.url === u && list.at(-1)?.tabId === t.id;
+        const ut = await undoTop();
+        const undoOk = ut?.kind === "store" && ut.label === zhL("pinned.pinTab");
+        // 固定行的菜单里没有「固定标签」
+        let pinnedHasPin = false;
+        if (row(u, ".arc-pinned")) { ctx(row(u, ".arc-pinned")!); await until(() => menuNow().length > 0, 2000); pinnedHasPin = menuNow().some(x => x.t === "pin"); await closeMenu(); }
+        key("z", "KeyZ", { [MOD]: true });
+        const back = await until(async () => !!row(u, ".arc-today") && !row(u, ".arc-pinned") && !walkAll(await pinnedNodes()).some(n => n.url === u), 3000).catch(() => false) /* 预期失败：下面断言 */;
+        await closeByUrl(u);
+        const f = { groups: groups.map(g => g.map(x => `${x.t}=${x.l}`).join(" / ")), lbl, want: zhL("pinned.pinTab"), placeOk, clicked, pinned, atEnd, list: list.map(n => n.url), undoTop: ut && { kind: ut.kind, label: ut.label }, pinnedHasPin, back };
+        expect(placeOk, "Today 菜单「固定标签」不在 / 文案不符 / 不在组 6 归档标签之前", f);
+        expect(clicked && pinned && atEnd && !pinnedHasPin, "点「固定标签」后没进固定区末尾 / 仍在 Today / 固定行菜单也有此项", f);
+        expect(undoOk && back, "Mod+Z 没把它退回 Today（撤销栈顶应为 store「固定标签」）", f);
+        return `菜单组 6：${g6.map(x => x.l).join(" / ")}；固定 → 固定区末尾 → Mod+Z 回 Today`;
     });
 
     await test("隐身窗口：标签 / 固定项 / 文件夹 / 多选菜单不显示「移到」；固定项 split / dup 仍在（SELFTEST.md 16）", async () => {
@@ -1928,7 +2048,7 @@ async function main() {
         expect(q1.opened && q1.initial === p0 && pNamed, "固定项菜单 rename 没进入行内编辑 / 初始文本不对 / 没写 customTitle", fl);
         expect(q2.opened && q2.initial === "ST Inline Pin" && pCleared && pRestored, "固定项：清空提交没清除 customTitle / 没恢复页面标题", fl);
         expect(!dlg, "出现了对话框（固定 / 今日应为行内编辑）", fl);
-        return "菜单 Rename → 行内编辑，初始文本 = 显示标题；Enter 提交；清空 / 全空白 = 清除自定义名并恢复页面标题；Esc 取消；无对话框（⛔ 未实际运行）";
+        return "菜单 Rename → 行内编辑，初始文本 = 显示标题；Enter 提交；清空 / 全空白 = 清除自定义名并恢复页面标题；Esc 取消；无对话框";
     });
     /* rel35b 第 36 项：多选含固定项（打开 + 未打开）+ 今日标签 → multi:dup 可点；固定项各复制成新固定项（原项之后）、今日标签 = chrome.tabs.duplicate；无 toast */
     await test("rel35c 多选 Duplicate（第 36 项）：固定项（打开着 / 未打开）各复制成紧随原项的新固定项并打开，今日标签 = chrome.tabs.duplicate，无 toast", async () => {
@@ -1976,8 +2096,11 @@ async function main() {
         const escape = async () => { const i = $(".arc-rename") as HTMLInputElement | null; if (i) i.dispatchEvent(new P.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await sleep(200); };
         const f: Record<string, any> = {};
         // 今日 + 固定：双击 → .arc-rename，初始文本 = 显示标题，没有对话框
-        const u = U("r35c46"); await newTab(u);
+        const u = U("r35c46"); const tb46 = await newTab(u);
         const tr0 = () => row(u, ".arc-today") ?? null;
+        /* rel51-x06：行显示 = p.title || 域名 || 「新标签页」，而行内编辑初始值 = p.title（原始标题）。标签刚建好、标题还没加载（tab.title === ""）时 t0 读到回退文案「新标签页」、
+         * 输入框初始值却是 ""，两者必不等（reproB-1 实测：t0 "新标签页"、todayInit ""，无时钟事件）。先等标签标题加载完且行已显示该标题再取 t0（最多 6s；离线 / 标题始终为空则放行，不改变原有判定）。 */
+        await until(async () => { const t = await chrome.tabs.get(tb46.id!).catch(() => null); return !!t?.title && t.status === "complete" && tr0()?.querySelector(".arc-tab-title")?.textContent === t.title; }, 6000);
         const t0 = tr0()?.querySelector(".arc-tab-title")?.textContent ?? "";
         dbl(tr0()); f.todayInp = await until(() => $(".arc-rename") as HTMLInputElement | null, 1500); f.todayInit = f.todayInp?.value; f.todayDlg = !!$('[data-test="dlg"]'); await escape();
         await pinRow(tr0());
@@ -2103,7 +2226,7 @@ async function main() {
         const kept = await until(async () => { const n = walkAll(await pinnedNodes()).find(x => x.id === node?.id); return n && n.url === U("pinsem") && n; }, 4000);
         const unloaded = await until(() => $$(".arc-pinned .arc-tab").find(x => textOf(x).startsWith(U("pinsem"))), 4000);
         click(unloaded!);
-        const reopened = await until(async () => (await chrome.tabs.query({})).find(x => (x.url ?? x.pendingUrl ?? "").startsWith(U("pinsem"))), 5000);
+        const reopened = await until(async () => (await chrome.tabs.query({})).find(x => (x.url || x.pendingUrl || "").startsWith(U("pinsem"))), 5000);
         // 替换为当前网址
         await chrome.tabs.update(reopened!.id!, { url: U("pinsem2") }); await sleep(800);
         const r = await until(() => $$(`.arc-pinned .arc-tab[data-sel="pin:${node?.id}"]`).find(x => x.querySelector(".arc-drift")), 5000); /* 只认本项的固定行（别的测试可能留下偏离的固定项） */
@@ -2512,8 +2635,8 @@ async function main() {
         STEP = 22; click(pk.querySelector("[data-test='tp-sw:red']")!);
         STEP = 23; const rgb = (R.style.getPropertyValue("--arc-space").match(/\d+/g) ?? []).map(Number);
         STEP = 24; const red = pk.querySelectorAll(".arc-tp-dot").length === 1 && rgb[0] > 190 && rgb[1] < 120 && rgb[2] < 130;
-        STEP = 25; // 对比度：自动模式下奶油色 → 浅色界面；石板灰 → 深色界面
-        STEP = 26; click(pk.querySelector("[data-test='tp-sw:cream']")!); const creamLight = await until(() => R.dataset.theme === "light", 1500);
+        STEP = 25; // [system-color-scheme/4] 自动 = 跟随全局外观（mode=auto 时 data-theme 不钉死，仍为 auto）；显式浅 / 深钉死（下面两步）
+        STEP = 26; const gmode = (await chrome.storage.local.get("ArcSidebarSettings")).ArcSidebarSettings?.plugins?.Spaces?.mode ?? "auto"; click(pk.querySelector("[data-test='tp-sw:cream']")!); const creamFollows = await until(() => R.dataset.theme === gmode, 1500);
         STEP = 27; click(pk.querySelector("[data-test='tp-scheme:dark']")!); const slateDark = await until(() => R.dataset.theme === "dark", 1500);
         STEP = 28; click(pk.querySelector("[data-test='tp-scheme:light']")!); const forcedLight = await until(() => R.dataset.theme === "light", 1500);
         STEP = 29; click(pk.querySelector("[data-test='tp-scheme:auto']")!);
@@ -2533,19 +2656,19 @@ async function main() {
         STEP = 44; // 侧边栏右键：恢复默认主题
         STEP = 45; ctx($("#app")!); const ri = await mi("resetSpaceTheme"); if (!ri) throw new Error("no reset item: " + $$(".arc-menu [data-test]").map(e => e.getAttribute("data-test")).join(",")); click(ri as Element);
         STEP = 46; const reset = await until(async () => !(await themes())[sid]);
-        STEP = 47; expect(hint && scheme && sw && noSelect && one && saved1 && tint1 && three && grad3 && two && red && creamLight && slateDark && forcedLight && paged && blue2 && grain && inten && closed && reset, "主题选择器",
-            { hint, scheme, sw, noSelect, one, saved1, tint1, three, grad3, two, red, rgb, creamLight, slateDark, forcedLight, paged, blue2, grain, inten, closed, reset, stored: stored[sid] });
+        STEP = 47; expect(hint && scheme && sw && noSelect && one && saved1 && tint1 && three && grad3 && two && red && creamFollows && slateDark && forcedLight && paged && blue2 && grain && inten && closed && reset, "主题选择器",
+            { hint, scheme, sw, noSelect, one, saved1, tint1, three, grad3, two, red, rgb, creamFollows, slateDark, forcedLight, paged, blue2, grain, inten, closed, reset, stored: stored[sid] });
         } catch (e) { throw new Error(`step ${STEP}: ${(e as Error).message}`); }
         return "平面点按 / + − 至 3 色 / 色板 + 分页 / 自动对比度 / 方案 / 颗粒 / 浓度 / 恢复";
     });
 
-    await test("C 站点控制面板（地址胶囊左侧图标）：分享 / 截图 / 提取正文、扩展网格 + 添加、按站点权限、安全胶囊、… 菜单（按 origin 清除）", async () => {
+    await test("C 站点控制面板（地址胶囊左侧图标）：分享 / 复制链接 / 截取部分 / 整页截图、扩展网格 + 添加、按站点权限、安全胶囊、… 菜单（按 origin 清除）", async () => {
         const nt = await chrome.tabs.create({ url: "https://example.com/?arcselftest=sc", windowId: selfWin, active: true }); mine.add(nt.id!);
         const shown = await until(() => /example\.com/.test($("[data-test=urlbar]")?.textContent ?? ""), 8000);
         await until(async () => (await chrome.tabs.get(nt.id!)).status === "complete", 8000);
         click($("[data-test=site-controls-btn]")!);
         const pn = await until(() => $(".arc-site-controls"), 4000) as HTMLElement;
-        const acts = ["sc-share", "sc-shot", "sc-text"].every(t => pn.querySelector(`[data-test=${t}]`));
+        const acts = ["sc-share", "sc-copy", "sc-capture", "sc-shot"].every(t => pn.querySelector(`[data-test=${t}]`));
         const noBoost = !pn.querySelector("[data-test=sc-boost]");
         const add = !!pn.querySelector("[data-test=sc-exts] [data-test=sc-add]");
         const nExt = pn.querySelectorAll("[data-test^='sc-ext:']").length;
@@ -2568,7 +2691,93 @@ async function main() {
         const shotNote = shot ? "" : $$(".arc-toast").map(e => e.textContent).join("|");
         await chrome.tabs.remove(nt.id!).catch(() => { }) /* 预期失败：清理：目标可能已被测试/产品关掉 */; await backToSelf(); await sleep(200);
         expect(shown && !!pn && acts && (noBoost || !!P.ArcSidebar.plugins.Boosts?.started) && add && rows === 6 && secure && blocked && rowShows && menuOk && cleared, "站点控制面板", { shown, acts, noBoost, add, nExt, rows, secure, blocked, rowShows, menuOk, cleared });
-        return `操作 3 · 扩展 ${nExt} + 添加 · 权限行 ${rows} · 弹出窗口=阻止 → 已还原 · 清除 Cookie · 截图${shot ? "已下载" : `（headless 未下载：${shotNote}）`}`;
+        return `操作 4 · 扩展 ${nExt} + 添加 · 权限行 ${rows} · 弹出窗口=阻止 → 已还原 · 清除 Cookie · 截图${shot ? "已下载" : `（headless 未下载：${shotNote}）`}`;
+    });
+
+    await test("C1 站点控制 · 顶部按钮行对齐 Arc（rel42，scc-action-buttons.md）：Share｜Copy URL｜Capture portion｜Capture full page，48×32、间距 8、提示、图标尺寸、分享菜单、复制去追踪参数、拖框截取", async () => {
+        const nt = await chrome.tabs.create({ url: "https://example.com/?utm_source=selftest&arcselftest=scc", windowId: selfWin, active: true }); mine.add(nt.id!);
+        await until(() => /example\.com/.test($("[data-test=urlbar]")?.textContent ?? ""), 8000);
+        await until(async () => (await chrome.tabs.get(nt.id!)).status === "complete", 8000);
+        // 先 Esc 关掉所有菜单（closeFloating 的 pointerdown 会吞掉之后 400ms 内的 click），等面板消失再点开
+        const open = async () => {
+            if ($(".arc-menu")) { D.dispatchEvent(new P.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await until(() => !$(".arc-menu"), 2000); }
+            click($("[data-test=site-controls-btn]")!);
+            const el = await until(() => $(".arc-site-controls"), 4000);
+            if (!el) throw new Error("站点控制面板没打开");
+            return el;
+        };
+        let pn = await open();
+        // 先结束面板的入场动画（缩放）再量尺寸
+        pn.getAnimations?.({ subtree: true }).forEach(a => { try { a.finish(); } catch { /* 无限动画不能 finish */ } }); await sleep(50);
+        const row = pn.querySelector<HTMLElement>("[data-test=sc-top]")!;
+        const btns = [...row.children] as HTMLElement[];
+        const order = btns.map(b => b.dataset.test).join(",");
+        const orderOk = order === "sc-share,sc-copy,sc-capture,sc-shot" && !pn.querySelector("[data-test=sc-text]");
+        const tips = btns.map(b => b.getAttribute("aria-label") ?? b.getAttribute("data-tip") ?? "");
+        const tipsOk = tips.join("|") === "Share|Copy URL|Capture a portion of this page|Capture the full page" || tips.join("|") === "分享|复制链接|截取页面的一部分|截取整个页面";
+        const rs = btns.map(b => b.getBoundingClientRect());
+        const sizes = rs.map(r => `${Math.round(r.width)}x${Math.round(r.height)}`);
+        const sizeOk = sizes.every(x => x === "48x32");
+        const gaps = rs.slice(1).map((r, i) => Math.round((r.left - rs[i].right) * 10) / 10);
+        const gapOk = gaps.every(g => Math.abs(g - 8) < 0.6);
+        const svg = btns.map(b => { const r = b.querySelector("svg")!.getBoundingClientRect(); return `${r.width.toFixed(1)}x${r.height.toFixed(1)}`; });
+        // share = SF square.and.arrow.up 16pt（13.9×17.5）；copy-url h17；SF camera 16pt（19.2×14.9）；capture-full-page h19
+        const svgOk = svg.join(",") === "13.9x17.5,17.0x17.0,19.2x14.9,19.0x19.0";
+        const enabled = btns.every(b => !(b as HTMLButtonElement).disabled);
+        // rel49：面板外框 = Arc 236 / padding 10（FUN_101387394；窄侧栏时 min(236, 视口−16)）、顶部按钮圆角 6（FUN_100ad514c，continuous 用 6px 近似）、按钮行在面板里水平居中（左右留白相等 = 10）
+        const pr = pn.getBoundingClientRect(), pcs = P.getComputedStyle(pn);
+        const wantW = Math.min(236, P.innerWidth - 16);
+        const frameOk = Math.abs(pr.width - wantW) < 1 && pcs.paddingLeft === "10px" && pcs.paddingTop === "10px" && pcs.rowGap === "10px";
+        const radiusOk = btns.every(b => P.getComputedStyle(b).borderTopLeftRadius === "6px");
+        const padL = rs[0].left - pr.left, padR = pr.right - rs[rs.length - 1].right;
+        const centerOk = Math.abs(padL - padR) < 1 && (wantW < 236 || Math.abs(padL - 10) < 1);
+        // Share：在鼠标位置弹菜单，面板保持打开（Arc reducer 返回 .none）
+        const sr = btns[0].getBoundingClientRect(); const mx = Math.round(sr.left + 20), my = Math.round(sr.top + 12);
+        click(btns[0], { clientX: mx, clientY: my, detail: 1 });
+        const sysItem = await mi("sc-share-system").catch(() => null) /* 预期失败：轮询超时即“没等到”，由后续断言判定 */;
+        const menu = sysItem?.closest(".arc-menu") as HTMLElement | null;
+        const mr = menu?.getBoundingClientRect();
+        const menuAt = mr ? `${Math.round(mr.left)},${Math.round(mr.top)}` : "";
+        const menuNear = !!mr && Math.abs(mr.left - mx) <= 24 && Math.abs(mr.top - my) <= 24;
+        const panelKept = pn.isConnected;
+        const menuItems = $$(".arc-menu:not(.arc-site-controls) [data-test]").map(e => e.getAttribute("data-test")).filter(x => x !== null && x.startsWith("sc-share"));
+        // Copy URL：清理跟踪参数 → 复制 → “Copied a clean link without trackers” → 关面板
+        pn = await open();
+        const got: string[] = []; const cb = P.navigator.clipboard; const orig = cb.writeText.bind(cb);
+        cb.writeText = async (t: string) => { got.push(t); };
+        $$(".arc-toast").forEach(e => e.remove());
+        try { click(pn.querySelector("[data-test=sc-copy]")!); await until(() => got.length > 0, 3000).catch(() => false) /* 预期失败：由断言判定 */; await sleep(150); } finally { cb.writeText = orig; }
+        const copied = got.at(-1) ?? "";
+        const copyOk = copied === "https://example.com/?arcselftest=scc";
+        const copyToast = $$(".arc-toast").map(e => e.textContent ?? "").join("|");
+        const cleanToast = /clean link without trackers|去除追踪参数/.test(copyToast);
+        const copyClosed = !pn.isConnected;
+        // Capture portion：注入拖框覆盖层（Capture 插件没开时）；Esc 取消不下载；拖框 → 下载裁剪图，面板已关
+        const capPlugin = !!P.ArcSidebar.plugins.Capture?.started;
+        const inPage = <T,>(func: () => T) => chrome.scripting.executeScript({ target: { tabId: nt.id! }, func }).then(r => r[0]?.result as T);
+        const hasOverlay = () => inPage(() => !!document.getElementById("cat-scc-capture-overlay"));
+        let capCancel: boolean | string = "skip(Capture 插件开着)", capShot: boolean | string = "skip", capClosed = true;
+        if (!capPlugin) {
+            pn = await open(); click(pn.querySelector("[data-test=sc-capture]")!); capClosed = !pn.isConnected;
+            const shown = await until(hasOverlay, 4000).catch(() => false) /* 预期失败：由断言判定 */;
+            await inPage(() => { dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+            capCancel = !!shown && await until(async () => !(await hasOverlay()), 3000).catch(() => false) /* 预期失败：由断言判定 */;
+            const t0 = Date.now();
+            pn = await open(); click(pn.querySelector("[data-test=sc-capture]")!);
+            await until(hasOverlay, 4000).catch(() => false) /* 预期失败：由断言判定 */;
+            await inPage(() => {
+                const el = document.getElementById("cat-scc-capture-overlay")!;
+                const ev = (type: string, x: number, y: number) => el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX: x, clientY: y }));
+                ev("pointerdown", 20, 20); ev("pointermove", 120, 80); ev("pointermove", 220, 160); ev("pointerup", 220, 160);
+            });
+            capShot = await until(async () => (await chrome.downloads.search({ filenameRegex: "Screenshot", startedAfter: new Date(t0 - 500).toISOString() })).length > 0, 6000).catch(() => false) /* 预期失败：headless 可能下载不了，由断言判定 */;
+            if (!capShot) capShot = `未下载：${$$(".arc-toast").map(e => e.textContent).join("|")}`;
+        }
+        await chrome.tabs.remove(nt.id!).catch(() => { }) /* 预期失败：清理：目标可能已被测试/产品关掉 */; await backToSelf(); await sleep(200);
+        const r = { order, tips, sizes, gaps, svg, enabled, frame: `${Math.round(pr.width)} pad ${pcs.paddingLeft}/${pcs.rowGap} 白边 ${padL.toFixed(1)}/${padR.toFixed(1)}`, radius: P.getComputedStyle(btns[0]).borderTopLeftRadius, menuAt, mouse: `${mx},${my}`, menuItems, panelKept, copied, copyToast, copyClosed, capPlugin, capCancel, capShot, capClosed };
+        const capOk = capPlugin || (capClosed && capCancel === true && capShot === true);
+        expect(orderOk && tipsOk && sizeOk && gapOk && svgOk && enabled && frameOk && radiusOk && centerOk && !!sysItem && menuNear && panelKept && copyOk && cleanToast && copyClosed && capOk, "站点控制顶部按钮行", r);
+        return `${order} · 48×32 r6 · 面板 ${Math.round(pr.width)} pad 10 · gap ${gaps.join("/")} · svg ${svg.join(" ")} · 菜单 @${menuAt} · 复制 ${copied} · 截取 ${capPlugin ? "Capture 插件" : `Esc 取消 ✓ · 拖框下载 ✓`}`;
     });
 
     await test("C2 站点控制 · 扩展网格：点按打开弹窗页（探测 + 缓存，失焦关闭）/ 无弹窗 → 选项页 / 停用·启用 / 搜索 / 右键菜单", async () => {
@@ -2613,7 +2822,7 @@ async function main() {
         // 无弹窗但有选项页 → 打开选项页
         pn = await open();
         click(tileOf(B.id));
-        const optTab = await until(async () => (await chrome.tabs.query({})).find(t => (t.url ?? t.pendingUrl ?? "").startsWith(`chrome-extension://${B.id}/opts.html`)), 15000);
+        const optTab = await until(async () => (await chrome.tabs.query({})).find(t => (t.url || t.pendingUrl || "").startsWith(`chrome-extension://${B.id}/opts.html`)), 15000);
         if (optTab?.id) await chrome.tabs.remove(optTab.id).catch(() => { }) /* 预期失败：清理：目标可能已被测试/产品关掉 */;
         const noneCached = (await data<any>("extPopup"))?.[`${B.id}@${B.version}`] === "none";
         await chrome.tabs.remove(nt.id!).catch(() => { }) /* 预期失败：清理：目标可能已被测试/产品关掉 */; await backToSelf(); await sleep(200);
@@ -2727,6 +2936,26 @@ async function main() {
             expect(stopped && restarted, "设置页的开关没有实时作用到侧边栏", { stopped, restarted });
             OW.dispatchEvent(new OW.KeyboardEvent("keydown", { key: "Escape" })); await sleep(80);
             expect(!q('[data-test="plugin-dialog"]'), "Esc 没有关闭配置对话框");
+            /* 自测框架 / 需有界面 harness（dialog-layering 补丁 4；作者不自己跑）：插件配置对话框里的下拉菜单必须在对话框之上（用户 bug）。
+             * 真点击：展开 InpageSidebar.prewarm → 菜单中心点 elementFromPoint 命中菜单本身（不是对话框 / 遮罩）、菜单 z-index > 遮罩 z-index；
+             * 警告行不撑高：「受限页前预热」行高与说明长度都在合理范围。z-index 数值不写死，只比较大小。 */
+            q('[data-config="InpageSidebar"]')!.click(); await sleep(150);
+            const prow = q('[data-setting-row="InpageSidebar.prewarm"]'), pdesc = prow?.querySelector<HTMLElement>(".arc-setting-desc");
+            const prowH = prow?.getBoundingClientRect().height ?? 0;
+            expect(prow && pdesc && pdesc.textContent!.length <= 120 && prowH > 0 && prowH < 120, "「受限页前预热」行应是标题 + 一句话说明（不能把整行撑高）", { prowH, descLen: pdesc?.textContent?.length });
+            const ptext = prow!.querySelector(".arc-setting-text")!; expect(ptext.getAttribute("data-tip") || ptext.hasAttribute("data-arc-tt"), "详细说明应挂在悬停提示上（ArcTooltip 接管后会移除 data-tip，改标 data-arc-tt）");
+            (q('.arc-vdialog [data-setting="InpageSidebar.prewarm"]') as HTMLElement).click();
+            const dmenu = await until(() => q(".arc-menu"), 2000) as HTMLElement | null;
+            expect(dmenu, "点下拉没有出现菜单");
+            const mr = dmenu!.getBoundingClientRect(), hit = O.elementFromPoint(mr.left + mr.width / 2, mr.top + mr.height / 2);
+            const zOf = (e: Element | null) => Number(OW.getComputedStyle(e!).zIndex);
+            expect(hit && dmenu!.contains(hit), "菜单被对话框盖住：菜单中心点命中的是别的元素", { hit: (hit as HTMLElement | null)?.className });
+            expect(zOf(dmenu) > zOf(q(".arc-vdialog-scrim")), "菜单 z-index 应大于对话框遮罩", { menu: zOf(dmenu), scrim: zOf(q(".arc-vdialog-scrim")) });
+            expect(mr.left >= 0 && mr.top >= 0 && mr.right <= OW.innerWidth && mr.bottom <= OW.innerHeight, "菜单应完整在窗口内", { mr });
+            dmenu!.dispatchEvent(new OW.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(120);
+            expect(!q(".arc-menu") && q('[data-test="plugin-dialog"]'), "菜单打开时 Esc 只应关菜单，不应连对话框一起关");
+            OW.dispatchEvent(new OW.KeyboardEvent("keydown", { key: "Escape" })); await sleep(80);
+            expect(!q('[data-test="plugin-dialog"]'), "再按 Esc 应关闭配置对话框");
             // 恢复默认
             q('[data-config="Spaces"]')!.click(); await sleep(150);
             const inten = q('.arc-vdialog [data-setting="Spaces.intensity"]') as HTMLInputElement;
@@ -2755,6 +2984,144 @@ async function main() {
             q('[data-nav="general"]')!.click(); await sleep(80);
             expect(q('[data-setting="PluginSettings.language"]') && q(".arc-opt-foot")?.textContent?.includes(VERSION), "通用页缺少语言 / 版本");
             return { plugins: cards.join(" "), viewsSections: sections, fields: rendered, live: "速览停止→恢复" };
+        } finally { ifr.remove(); }
+    });
+
+    /* 自测框架 / 需有界面 harness（options-categories 补丁 2；Cat 裁决 14:17：集成有界面 harness 空档时再跑，作者不自己跑）：
+     * 设置页分类栏（Void++ PluginsTab.tsx 134-166 / 206-226 / 220）：栏存在且在搜索行上方 / 点击过滤卡片 / 与搜索叠加 / 占位带数量。 */
+    await test("设置页分类栏（Void++ PluginsTab）：栏存在（收藏 · 全部 · 各 tag）且在搜索行上方 / 点击过滤卡片 / 与搜索叠加 / 占位数量 = 当前分类的卡片数", async () => {
+        const ifr = document.createElement("iframe");
+        ifr.src = "options.html"; ifr.style.cssText = "width:1100px;height:700px;position:fixed;left:-2000px;top:0";
+        document.body.append(ifr);
+        try {
+            await until(() => ifr.contentDocument?.body?.dataset.ready === "1", 8000);
+            const O = ifr.contentDocument!, OW = ifr.contentWindow as any;
+            const q = (sel: string) => O.querySelector<HTMLElement>(sel), qa = (sel: string) => [...O.querySelectorAll<HTMLElement>(sel)];
+            const cards = () => qa("[data-card]").map(c => c.dataset.card!);
+            const cnt = () => Number(/\d+/.exec((q('[data-test="opt-search"]') as HTMLInputElement).placeholder)?.[0] ?? NaN);
+            const pick = async (c: string) => { q(`[data-test="opt-cat:${c}"]`)!.click(); await sleep(80); };
+            const type = async (v: string) => { const s = q('[data-test="opt-search"]') as HTMLInputElement; s.value = v; s.dispatchEvent(new OW.Event("input", { bubbles: true })); await sleep(80); };
+            const listed = Object.values(P.ArcSidebar.plugins).filter((p: any) => !p.hidden) as any[];
+            // 1. 栏存在：tablist，收藏 + 全部 +（有命中的）各 tag；默认「全部」选中；DOM 上在搜索行之前；没有占用 [data-nav]
+            const bar = q('[data-test="opt-cats"]');
+            const ids = qa("[data-cat]").map(b => b.dataset.cat);
+            expect(bar && bar.getAttribute("role") === "tablist" && ids[0] === "favorites" && ids[1] === "all", "分类栏缺失或顺序不对", ids);
+            expect(ids.slice(2).every(t => listed.some(p => p.tags?.includes(t))) && ["tabs", "spaces", "command", "views", "library", "data"].every(t => ids.includes(t)), "分类栏应列出有插件命中的 tag", ids);
+            expect(q('[data-cat="all"]')!.classList.contains("active") && qa(".arc-opt-cat.active").length === 1, "默认应选中「全部」");
+            expect(!!(bar!.compareDocumentPosition(q(".arc-opt-filterbar")!) & Node.DOCUMENT_POSITION_FOLLOWING), "分类栏应在搜索 / 筛选行之前（同 Void++）");
+            expect(qa("[data-nav]").map(b => b.dataset.nav).join() === "plugins,general", "分类按钮不应占用 [data-nav]");
+            const all = cards();
+            expect(all.length === listed.length && cnt() === all.length, "「全部」：卡片数应 = 可见插件数 = 占位数量", { cards: all.length, listed: listed.length, ph: cnt() });
+            // 2. 点击过滤：每个分类的卡片 = 带该 tag 的插件；占位数量 = 卡片数；只有「全部」有必需插件的分隔线
+            for (const t of ids.filter(x => x !== "all" && x !== "favorites")) {
+                await pick(t!);
+                const want = listed.filter(p => p.tags?.includes(t)).map(p => p.name).toSorted(), got = cards().toSorted();
+                expect(got.join() === want.join() && cnt() === got.length && q(`[data-cat="${t}"]`)!.classList.contains("active") && !q(".arc-opt-sep"), `分类 ${t} 的卡片不对`, { want, got, ph: cnt() });
+            }
+            await pick("favorites");
+            expect(cards().length === 0 && !!q(".arc-opt-list .arc-hint"), "「收藏」没有收藏时应为空态");
+            await pick("all");
+            expect(cards().length === all.length && !!q(".arc-opt-sep"), "回到「全部」应恢复全部卡片和必需插件分隔线");
+            // 3. 与搜索叠加：views + “peek” → 只有 Views；占位数量不随搜索变化；换到 tabs 仍带着搜索词 → 空；清空 → 恢复
+            await pick("views"); const views = cards(); const phViews = cnt();
+            await type("peek");
+            expect(cards().join() === "Views" && cnt() === phViews, "分类 + 搜索应叠加（占位数量不含搜索）", { cards: cards(), phViews, ph: cnt() });
+            await pick("tabs");
+            // 空态文案取 options iframe 自己的语言（options 页经 bootstrap → setLang 设 <html lang>；自测页自己的 trLocal 没有 setLang，走 detectLang()，与 iframe 的存储语言可能不同）
+            const oLang = O.documentElement.lang.toLowerCase().startsWith("zh") ? "zh" : "en", hint = q(".arc-opt-list .arc-hint")?.textContent;
+            expect(cards().length === 0 && !!hint && hint === LOCALES[oLang]["settings.noMatch"], "搜索词应跟着分类切换继续生效（tabs 里没有 peek）：卡片为空且空态 = 同语言的 settings.noMatch", { cards: cards(), hint, oLang, want: LOCALES[oLang]["settings.noMatch"] });
+            await type(""); await pick("views");
+            expect(cards().join() === views.join(), "清空搜索后分类内容应恢复", cards());
+            // 4. 切到「通用」再回来 → 回到默认分类、搜索清空
+            q('[data-nav="general"]')!.click(); await sleep(80); q('[data-nav="plugins"]')!.click(); await sleep(100);
+            expect(q('[data-cat="all"]')!.classList.contains("active") && cards().length === all.length, "切页回来应回到「全部」");
+            return { categories: ids.join(" "), views: views.join(" "), placeholder: (q('[data-test="opt-search"]') as HTMLInputElement).placeholder };
+        } finally { ifr.remove(); }
+    });
+
+    await test("插件管理页卡片图标（plugin-icon-map.md §7）：每张卡 = 该插件自己的图标，不是占位 / 不重复 / id 唯一；没有映射的插件不渲染图标容器", async () => {
+        const ifr = document.createElement("iframe");
+        ifr.src = "options.html"; ifr.style.cssText = "width:1100px;height:900px;position:fixed;left:-2000px;top:0";
+        document.body.append(ifr);
+        try {
+            // rel44：等页面就绪必须断言（until 超时只返回 falsy，不会抛——否则下面在没渲染完的页面上量，报出一堆不相干的“没有 svg”）
+            expect(await until(() => ifr.contentDocument?.body?.dataset.ready === "1", 8000), "options.html 8s 内没有就绪（body[data-ready=1]）", { ready: ifr.contentDocument?.body?.dataset.ready ?? null, cards: ifr.contentDocument?.querySelectorAll("[data-card]").length ?? null });
+            const O = ifr.contentDocument!, OW = ifr.contentWindow as any;
+            const cards = [...O.querySelectorAll<HTMLElement>("[data-card]")];
+            const listed = Object.values(P.ArcSidebar.plugins).filter((p: any) => !p.hidden).map((p: any) => p.name as string);
+            // rel44：防空过——没有卡 / 没有插件时，下面所有“每张卡都…”都会空真
+            expect(cards.length > 0 && listed.length > 0, "没有渲染出插件卡片（断言会空过）", { cards: cards.length, listed: listed.length });
+            // 1) 每个可见插件都有一张卡、都有映射、卡片里都有图标容器（本方案没有无图标的卡）
+            const noMap = listed.filter(n => !(n in PLUGIN_CARD_ICON));
+            const noCard = listed.filter(n => !cards.some(c => c.dataset.card === n));
+            const noBox = cards.filter(c => !c.querySelector(".arc-vcard-icon")).map(c => c.dataset.card);
+            // 2) 图标不是占位：svg 有可画元素 + bbox > 0 + 渲染尺寸 > 0；BoxOfThings = 5 层 <i> 且有尺寸
+            const bad: string[] = [];
+            for (const c of cards) {
+                const n = c.dataset.card!, box = c.querySelector<HTMLElement>(".arc-vcard-icon"); if (!box) continue;
+                const rr = box.getBoundingClientRect();
+                if (Math.round(rr.width) !== 24 || Math.round(rr.height) !== 24) bad.push(`${n}: 容器 ${rr.width}×${rr.height} ≠ 24×24（⛔ 保持现状）`);
+                if (n === "Library") {
+                    const bt = box.querySelector<HTMLElement>(".arc-boxthings"), r2 = bt?.getBoundingClientRect();
+                    if (!bt || bt.querySelectorAll(":scope > i").length < 5 || !r2 || r2.width <= 0 || r2.height <= 0) bad.push("Library: 没有 BoxOfThings");
+                    continue;
+                }
+                const svg = box.querySelector("svg") as SVGSVGElement | null;
+                if (!svg) { bad.push(`${n}: 没有 svg`); continue; }
+                if (!svg.classList.contains(`arc-svg-${PLUGIN_CARD_ICON[n]}`)) bad.push(`${n}: 图标 ${[...svg.classList].join(".")} ≠ ${PLUGIN_CARD_ICON[n]}（映射表）`);
+                if (!svg.querySelector("path,image,rect,use,circle,g")) bad.push(`${n}: svg 为空`);
+                const bb = svg.getBBox(), sr = svg.getBoundingClientRect();
+                if (!(bb.width > 0 && bb.height > 0 && sr.width > 0 && sr.height > 0)) bad.push(`${n}: bbox ${bb.width}×${bb.height} / 渲染 ${sr.width}×${sr.height}`);
+                // 位图遮罩被撑成实心方块：<rect mask> 的 mask 必须能在文档里解析到
+                for (const m of svg.querySelectorAll<SVGElement>("[mask],[filter],[clip-path]")) for (const a of ["mask", "filter", "clip-path"]) {
+                    const id = /url\(#([^)]+)\)/.exec(m.getAttribute(a) ?? "")?.[1]; if (id && !O.getElementById(id)) bad.push(`${n}: ${a}=url(#${id}) 找不到`);
+                }
+            }
+            // 2b) 位图（<image> 遮罩）图标（Arc tab__tab@2x.png 是实心圆角方块，用户看成“白方块”）：只允许 Spaces 的 Arc 双卡片剪影（有轮廓，不是方块）；其它卡不得再用位图遮罩
+            const masked = cards.filter(c => c.querySelector(".arc-vcard-icon svg image")).map(c => c.dataset.card);
+            if (masked.some(n => n !== "Spaces")) bad.push(`位图遮罩（实心方块风险）: ${masked.join()}`);
+            // 3) id 在文档里唯一（遮罩 / 滤镜 / 裁剪）
+            const allIds = [...O.querySelectorAll(".arc-vcard-icon [id]")].map(e => e.id);
+            const dupIds = [...new Set(allIds.filter((id, i) => allIds.indexOf(id) !== i))];
+            // 4) 五个“SF closest”同一规格：16pt Regular 导出、14 盒渲染（按 14/16 缩放）；Capture 的 SF camera 同规格
+            const G = { ...ION_GLYPHS, ...SF } as Record<string, { src: string; pt: number; w: number }>;
+            const sfBad: string[] = [];
+            for (const [n, name] of [["TabSleep", "moonZzz"], ["TidyTabTitles", "textformat"], ["DownloadRename", "arrowDown"], ["Adaptive", "paintpalette"], ["Data", "externaldrive"], ["Capture", "cameraRegular"]] as const) {
+                const svg = O.querySelector(`[data-card="${n}"] .arc-vcard-icon svg`), g = G[name]!;
+                const w = Number(svg?.getAttribute("width"));
+                if (g.pt !== 16 || !/_16pt_regular\.svg$/.test(g.src) || Math.abs(w - g.w * 14 / 16) > 0.01) sfBad.push(`${n}/${name}: pt ${g.pt} src ${g.src} width ${w} 期望 ${(g.w * 14 / 16).toFixed(3)}`);
+            }
+            // 5) 点名的 11 张卡互不相同（同分类不再共用图标）
+            const named = ["CleanUrls", "TidyTabs", "Boosts", "Capture", "Views", "Library", "TabSleep", "TidyTabTitles", "DownloadRename", "Adaptive", "Data"];
+            const kinds = named.map(n => O.querySelector(`[data-card="${n}"] .arc-vcard-icon`)?.getAttribute("data-icon"));
+            // 6) 没有映射的插件不渲染容器（卡片渲染走同一个 cardIconOf）
+            const fallback = cardIconOf({ name: "NoSuchPlugin" } as any);
+            expect(!noMap.length && !noCard.length && !noBox.length && !bad.length && !dupIds.length && !sfBad.length && new Set(kinds).size === named.length && fallback === undefined,
+                "插件卡片图标不符合映射", { noMap, noCard, noBox, bad, dupIds, sfBad, kinds, fallback });
+            // 7) 左侧导航 2 个图标 + 卡片「配置」按钮（options-nav-icons）：Plugins = SF powerplug.portrait、General = SF gearshape、配置 = SF slider.horizontal.3；
+            //    16×16 居中容器、glyph 14 盒（16pt Regular × 14/16）、不溢出容器、两行文字起点对齐；`sliders`（站点控制）不得再出现在设置页
+            const navBad: string[] = [];
+            const navLeft: number[] = [];
+            for (const [id, name] of [["plugins", "powerplugPortrait"], ["general", "gearshape"]] as const) {
+                const item = O.querySelector<HTMLElement>(`[data-nav="${id}"]`), box = item?.querySelector<HTMLElement>(".arc-opt-nav-icon"), svg = box?.querySelector("svg") as SVGSVGElement | null | undefined;
+                if (!item || !box || !svg) { navBad.push(`${id}: 没有导航按钮 / 图标容器 / svg`); continue; }
+                const br = box.getBoundingClientRect(), sr = svg.getBoundingClientRect(), g = SF[name as keyof typeof SF] as { pt: number; w: number; h: number; src: string };
+                if (Math.round(br.width) !== 16 || Math.round(br.height) !== 16) navBad.push(`${id}: 容器 ${br.width}×${br.height} ≠ 16×16`);
+                if (!svg.classList.contains(`arc-svg-${name}`)) navBad.push(`${id}: 图标 ${[...svg.classList].join(".")} ≠ ${name}`);
+                if (svg.classList.contains("arc-svg-sliders") || svg.classList.contains("arc-svg-plugin")) navBad.push(`${id}: 还是旧图标（sliders / plugin）`);
+                if (g.pt !== 16 || !/_16pt_regular\.svg$/.test(g.src) || Math.abs(Number(svg.getAttribute("width")) - g.w * 14 / 16) > 0.01) navBad.push(`${id}/${name}: pt ${g.pt} src ${g.src} width ${svg.getAttribute("width")} 期望 ${(g.w * 14 / 16).toFixed(3)}`);
+                if (!(sr.width > 0 && sr.height > 0) || sr.left < br.left - 0.01 || sr.right > br.right + 0.01 || sr.top < br.top - 0.01 || sr.bottom > br.bottom + 0.01) navBad.push(`${id}: glyph ${sr.width}×${sr.height} 溢出 16×16 容器`);
+                if (!svg.querySelector("path")) navBad.push(`${id}: svg 为空`);
+                const bb = svg.getBBox(); if (!(bb.width > 0 && bb.height > 0)) navBad.push(`${id}: bbox ${bb.width}×${bb.height}`);
+                navLeft.push(Math.round(item.querySelector<HTMLElement>(".arc-opt-nav-label")!.getBoundingClientRect().left * 10) / 10);
+            }
+            if (navLeft.length === 2 && navLeft[0] !== navLeft[1]) navBad.push(`两个导航项的文字起点不对齐 ${navLeft.join(" / ")}`);
+            const cfgBtns = [...O.querySelectorAll<HTMLElement>("[data-config]")];
+            const cfgBad = cfgBtns.filter(b => { const s = b.querySelector("svg"); return !s || !s.classList.contains("arc-svg-sliderHorizontal3") || s.classList.contains("arc-svg-sliders"); }).map(b => b.dataset.config);
+            expect(cfgBtns.length > 0, "没有任何卡片「配置」按钮（断言会空过）", { cfgBtns: cfgBtns.length });
+            expect(!navBad.length && !cfgBad.length, "设置页导航 / 配置按钮图标不符合 options-nav-icons", { navBad, cfgBad, navLeft, cfgBtns: cfgBtns.length });
+            OW.dispatchEvent(new OW.Event("resize"));
+            return `${cards.length} 张卡全部有图标 · 11 张点名卡互不相同 · SF 同规格 16pt Regular → 14 盒 · 无重复 id · 导航 powerplug.portrait / gearshape（16×16 容器、不溢出、文字对齐）· ${cfgBtns.length} 个配置按钮 = slider.horizontal.3`;
         } finally { ifr.remove(); }
     });
 
@@ -2790,6 +3157,47 @@ async function main() {
         }
         expect(!bad.length && prevOk === true, "行状态与 Arc 不一致", { bad, prevOk });
         return { dark, prev: prevOk };
+    });
+
+    await test("上一个标签 ≠ 选中（rel63 #4）：.arc-prev 行底色 = --arc-prev（深色 α.08），选中行 = --arc-active（深色 α.20），两者可区分", async () => {
+        /* 补丁 rel63-fav-reattach（#4）：上一条只断言 .arc-prev 行“有底色”，分不出它和选中底色。这里读真实计算后的底色透明度：
+         * ① 依次激活 A、B，回到自测页 → B 行带 .arc-prev（PrevTab.ts）；② 同一行临时加上 .active（只改 DOM，马上还原）读选中底色——同一行、同一套 CSS（sidepanel.css:389 / 392）；
+         * ③ 页面上真的有 .active 行时也一并核对；④ 强制深色（同「图标深浅」用例的做法：摘 data-adaptive、--arc-fg 浅色、data-theme=dark、关过渡）断言 .08 / .20，之后还原。 */
+        const alpha = (c: string) => { const m = c.match(/[\d.]+/g); if (!m || m.length < 3) return NaN; return m.length > 3 ? Number(m[3]) : 1; };
+        const near = (a: number, b: number) => Math.abs(a - b) < .006;
+        await backToSelf(); await sleep(200);
+        const rows = ([...P.document.querySelectorAll(".arc-today .arc-tab[data-sel^='tab:']")] as HTMLElement[]);
+        const ids = rows.slice(-2).map(r => Number(r.dataset.sel!.slice(4)));
+        expect(ids.length === 2, "Today 标签不足 2 个", { n: rows.length });
+        await chrome.tabs.update(ids[0]!, { active: true }); await sleep(250);
+        await chrome.tabs.update(ids[1]!, { active: true }); await sleep(300); await backToSelf();
+        // 前置状态：B 行带 .arc-prev，且侧栏已把 .active 从 B 行摘掉（回到自测页后选中态重绘稍晚于 .arc-prev，r63 首轮 harness 读到过 "active arc-prev" 同时在）
+        const pv = await until(() => { const e = $(`.arc-tab[data-sel="tab:${ids[1]}"]`) as HTMLElement | null; return e?.classList.contains("arc-prev") && !e.classList.contains("active") ? e : null; }, 5000);
+        expect(!!pv && !pv.classList.contains("active"), "回到自测页后 5s 内 B 行没有变成「.arc-prev 且非 .active」", { cls: ($(`.arc-tab[data-sel="tab:${ids[1]}"]`) as HTMLElement | null)?.className });
+        const R = D.documentElement; const origTheme = R.dataset.theme, origAd = R.dataset.adaptive, origFg = R.style.getPropertyValue("--arc-fg");
+        const noTr = D.createElement("style"); noTr.textContent = "#app, #app * { transition: none !important; }"; D.head.append(noTr);
+        const read = () => {
+            const cs = P.getComputedStyle(R);
+            const prev = alpha(P.getComputedStyle(pv!).backgroundColor);
+            pv!.classList.add("active"); const sel = alpha(P.getComputedStyle(pv!).backgroundColor); pv!.classList.remove("active");
+            const realAct = $(".arc-today .arc-tab.active, .arc-pinned .arc-tab.active") as HTMLElement | null;
+            return { prevVar: alpha(cs.getPropertyValue("--arc-prev")), actVar: alpha(cs.getPropertyValue("--arc-active")), prev, sel, real: realAct && realAct !== pv ? alpha(P.getComputedStyle(realAct).backgroundColor) : null };
+        };
+        let cur: ReturnType<typeof read>, dk: ReturnType<typeof read>, held = false;
+        try {
+            await sleep(50); cur = read();
+            delete R.dataset.adaptive; R.style.setProperty("--arc-fg", "#ececf3"); R.dataset.theme = "dark"; await sleep(150);
+            held = R.dataset.theme === "dark"; dk = read();
+        } finally {
+            if (origTheme === undefined) delete R.dataset.theme; else R.dataset.theme = origTheme;
+            if (origAd !== undefined) R.dataset.adaptive = origAd;
+            if (origFg) R.style.setProperty("--arc-fg", origFg); else R.style.removeProperty("--arc-fg");
+            noTr.remove(); await sleep(150);
+        }
+        const okCur = near(cur.prev, cur.prevVar) && near(cur.sel, cur.actVar) && !near(cur.prev, cur.sel) && (cur.real == null || near(cur.real, cur.actVar));
+        const okDark = held && near(dk.prev, .08) && near(dk.sel, .20) && near(dk.prevVar, .08) && near(dk.actVar, .20);
+        expect(okCur && okDark, "上一个标签底色与选中底色分不开 / 不是 --arc-prev / --arc-active", { cur, dk, held });
+        return `当前主题 prev α${cur.prev} / 选中 α${cur.sel}；深色 prev α${dk.prev} / 选中 α${dk.sel}`;
     });
 
     await test("标题列与斜线版面（title-column，SELFTEST 57–66）：所有标签行 / 新标签页 / 文件夹标题起点 = 图标左缘 + 26（44）；偏离行斜杠 4×15、标题 = 图标左缘 + 28（46），图标不动；图标区 hover / 点击同一条线", async () => {
@@ -2856,6 +3264,85 @@ async function main() {
         expect(col("today") && col("newtab"), "Today 行 / 新标签页行：标题 = 图标左缘 + 26（44）（第 63 / 64 项）", f);
         expect(col("folder") && (f.folder as any).iconW === 17, "文件夹行：标题 = 图标左缘 + 26（44），文件夹图标仍 17（第 65 项）", f);
         expect(f.colorOk === true, "斜杠颜色 = TabCellSlash α .30（第 66 项）", f);
+        return f;
+    });
+
+    await test("固定标签图标区 hover（pinned-icon-hover，SELFTEST 67–72）：未偏离 / 已偏离各量一遍（标题偏移 / 副标题 / − / 斜杠 / tooltip）；整屏重绘摘掉悬停态后按指针位置重判", async () => {
+        /* 行只按 tab id（data-sel → pinTab）定位；导航后固定区会重绘，量之前等 status=complete 并重新取行。
+         * 67–70 = pinned-title-hover.md §1.5 / §5.2 的矩阵（canResetTab=false：整行 hover 只有 −；canResetTab=true：图标区 → 上移 7 + 第二行 + 无 − + 斜杠 α0；标题区 → 只有 −、斜杠 α0）；
+         * 71–72 = 根因回归：keepHover.morphInto 的 syncAttrs 把运行时写的 data-hz / data-tip-blocked / --arc-sub-left（rel48：加 data-fav-orig 换图标记）摘了 → 指针不动就丢，REHOVER 重判（真实鼠标 + 真实重绘见 harness 的 pinhover 阶段）。
+         * 合成事件没有真 :hover，所以这里只断言 JS 写的状态（data-hz / 位移 / 副标题 / tooltip）；「−」α / 斜杠 α 依赖 CSS :hover，由 harness 真实鼠标断言。副标题文案随语言，只断言非空。 */
+        const tA = await newTab(U("pihA")), tB = await newTab(U("pihB"));
+        const todayRow = (id: number) => $(`.arc-today .arc-tab[data-sel="tab:${id}"]`);
+        const pinnedRow = (id: number) => $$(".arc-pinned .arc-tab").find(x => pinTab.get(x.dataset.sel ?? "") === id);
+        for (const t of [tA, tB]) { await pinRow(todayRow(t.id!)); await until(() => pinnedRow(t.id!), 5000); }
+        await chrome.tabs.update(tB.id!, { url: "https://example.org/?arcselftest=pih-drifted" });
+        await until(async () => (await chrome.tabs.get(tB.id!)).status === "complete" && !!pinnedRow(tB.id!)?.querySelector("svg.arc-drift"), 8000); await sleep(600);
+        const R = (e: Element | null | undefined) => { const r = e?.getBoundingClientRect(); return r ? { l: r.left, r: r.right, t: r.top, cy: r.top + r.height / 2 } : null; };
+        const mv = (el: Element, x: number, y: number) => el.dispatchEvent(new P.MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+        const dy = (e: Element | null | undefined) => { const t = e ? getComputedStyle(e).transform : "none"; return t === "none" ? 0 : Math.round(new DOMMatrixReadOnly(t).m42 * 100) / 100; };
+        const state = (row: Element) => {
+            const sub = row.querySelector<HTMLElement>(".arc-tab-sub"), close = row.querySelector<HTMLElement>(".arc-tab-close"), slash = row.querySelector<HTMLElement>(".arc-drift");
+            return { hz: row.getAttribute("data-hz"), blocked: row.hasAttribute("data-tip-blocked"), titleDy: dy(row.querySelector(".arc-tab-title")), sub: sub ? { text: sub.textContent, opacity: getComputedStyle(sub).opacity } : null,
+                close: close ? getComputedStyle(close).opacity : null, slash: slash ? getComputedStyle(slash).opacity : null, tips: $$(".arc-tooltip:not(.out)").length, titleAttr: row.hasAttribute("title") || !!row.querySelector("[title]"),
+                favSwap: row.hasAttribute("data-fav-orig"), savedFav: row.getAttribute("data-saved-fav") }; // rel48 ①：图标换图状态（并进 68–71）
+        };
+        const f: Record<string, any> = {};
+        let sepTab: chrome.tabs.Tab | undefined;
+        const nr = pinnedRow(tA.id!);
+        if (nr) { // 未偏离：没有斜杠 / 副标题；图标区 hover 与整行 hover 一样，只有 −
+            const rr = R(nr)!, ic = R(nr.querySelector(".arc-fav"))!;
+            nr.dispatchEvent(new P.MouseEvent("mouseenter")); mv(nr, ic.l + 8, rr.cy); await sleep(300); f.normIcon = state(nr);
+            await sleep(1800); f.normIconTip = $$(".arc-tooltip:not(.out)").length; // 行提示（1.5s）会出现——Arc ⛔-5（没找到压制逻辑）：保持现状，不压制
+            nr.dispatchEvent(new P.MouseEvent("mouseleave"));
+        }
+        const dr = pinnedRow(tB.id!)?.querySelector("svg.arc-drift") ? pinnedRow(tB.id!) : undefined;
+        if (dr) {
+            const sl = R(dr.querySelector(".arc-drift"))!, rr = R(dr)!, ic = R(dr.querySelector(".arc-fav"))!, ti = R(dr.querySelector(".arc-tab-title"))!;
+            f.drift = { slash: [sl.l, sl.r], icon: [ic.l, ic.r], row: [rr.l, rr.r], titleLeft: ti.l };
+            dr.dispatchEvent(new P.MouseEvent("mouseenter")); mv(dr, ic.l + 8, rr.cy); await sleep(300); f.driftIcon = state(dr);
+            { // rel47 ④⑤（并进第 68 项）：图标区悬停时 −/✕ 不占位（display none），第一行 / 第二行右界都到行内容最右（行右缘 − padding 6）；第一行用省略号、没有渐隐 mask
+                const T = dr.querySelector<HTMLElement>(".arc-tab-title"), S = dr.querySelector<HTMLElement>(".arc-tab-sub"), C = dr.querySelector<HTMLElement>(".arc-tab-close");
+                const cs = T ? getComputedStyle(T) : null;
+                f.driftEdges = { rowR: R(dr)!.r, titleR: R(T)!.r, subR: R(S)!.r, closeDisplay: C ? getComputedStyle(C).display : null, titleOverflow: cs?.textOverflow, titleMask: cs?.maskImage || cs?.webkitMaskImage || "none" };
+            }
+            await sleep(1800); f.driftIconTip = $$(".arc-tooltip:not(.out)").length;
+            // rel47：图标区悬停期间按下 / 松开 ⌘ → 第二行实时换成 “Separate From Pinned Tab” / 换回 “Back to Pinned URL”（pinned-icon-hover.md 结论 1；并进第 68 项）
+            const keyMeta = (type: string, meta: boolean) => P.dispatchEvent(new P.KeyboardEvent(type, { key: "Meta", code: "MetaLeft", metaKey: meta, bubbles: true, cancelable: true }));
+            const isLoc = (k: string, s: unknown) => Object.values(LOCALES).some(l => l[k] === s);
+            keyMeta("keydown", true); await sleep(200); f.metaOn = isLoc("pinned.separate", state(dr).sub?.text); f.metaFav = state(dr).favSwap;
+            keyMeta("keyup", false); await sleep(200); f.metaOff = isLoc("pinned.backToUrl", state(dr).sub?.text); f.metaOffFav = state(dr).favSwap;
+            mv(dr, rr.l + 2, rr.cy); await sleep(200); f.driftLeftEdge = state(dr).hz;   // 图标区 = 行左缘 → 斜杠左缘
+            mv(dr, sl.l - 1, rr.cy); await sleep(200); f.driftSlashLeft = state(dr).hz;
+            mv(dr, sl.r + 8, rr.cy); await sleep(300); f.driftBody = state(dr);
+            // 71：模拟 morphInto 的 syncAttrs（新树没有的属性被摘）后，指针仍在图标区 → REHOVER 把 data-hz / data-tip-blocked / --arc-sub-left 补回
+            mv(dr, ic.l + 8, rr.cy); await sleep(300);
+            dr.removeAttribute("data-hz"); dr.removeAttribute("data-tip-blocked"); dr.removeAttribute("data-fav-orig"); dr.style.removeProperty("--arc-sub-left"); // rel48 ①：morph 同样摘掉换图标记（图标回到新树的当前页图标）→ REHOVER 经 applyMeta 补回换图
+            dr.dispatchEvent(new Event("arc-rehover")); await sleep(300);
+            f.rehoverIcon = { ...state(dr), subLeft: dr.style.getPropertyValue("--arc-sub-left"), titleLeft: ti.l };
+            // 72：指针在标题区时 REHOVER 不置位（状态摘掉后保持摘掉）
+            mv(dr, sl.r + 8, rr.cy); await sleep(200);
+            dr.dispatchEvent(new Event("arc-rehover")); await sleep(200); f.rehoverBody = state(dr).hz;
+            dr.dispatchEvent(new P.MouseEvent("mouseleave"));
+            // rel47 ⑦（并进第 71 项之后的收尾）：⌘ + 单击图标区 = 分离当前页——当前页 tB 仍是 pih-drifted、状态不动，固定项改绑一个按保存网址新开的后台标签；multiSelect 不能把它当 ⌘ 多选吞掉
+            const actB0 = (await chrome.tabs.get(tB.id!)).active;
+            mv(dr, ic.l + 8, rr.cy); await sleep(200);
+            dr.dispatchEvent(new P.MouseEvent("click", { bubbles: true, cancelable: true, clientX: ic.l + 8, clientY: rr.cy, metaKey: true }));
+            await until(async () => (await chrome.tabs.query({})).some(x => x.id !== tB.id && x.url === U("pihB")), 6000); await sleep(600);
+            const nt = (await chrome.tabs.query({})).find(x => x.id !== tB.id && x.url === U("pihB"));
+            const curB = await chrome.tabs.get(tB.id!);
+            f.separate = { newTab: !!nt, curUrl: curB.url, curKeptActive: curB.active === actB0, pinnedBound: !!nt && !!pinnedRow(nt.id!), oldStillPinned: !!pinnedRow(tB.id!), oldInToday: !!todayRow(tB.id!), sel: dr.isConnected ? undefined : "row-replaced" };
+            if (nt) sepTab = nt;
+        }
+        for (const t of [tA, sepTab ?? tB]) { await chrome.tabs.update(t.id!, { active: true }); await sleep(300); await run("pin.toggle"); await sleep(300); }
+        await backToSelf(); await chrome.tabs.remove([tA.id!, tB.id!, ...(sepTab?.id != null ? [sepTab.id] : [])]).catch(() => { /* 已关 */ }); await sleep(300);
+        const ni = f.normIcon, di = f.driftIcon, db = f.driftBody, ri = f.rehoverIcon;
+        expect(!!ni && ni.hz === null && ni.titleDy === 0 && ni.sub === null && ni.slash === null && ni.titleAttr === false && ni.favSwap === false && ni.savedFav === null, "未偏离固定行 · 图标区 hover：不上移、没有第二行 / 斜杠，「−」显示，无原生 title（第 67 项，canResetTab=false）", f);
+        expect(!!di && di.hz === "icon" && di.titleDy === -7 && !!di.sub?.text && di.sub.opacity === "1" && di.close === "0" && di.slash === "0" && di.titleAttr === false && f.metaOn === true && f.metaOff === true && di.favSwap === true && String(di.savedFav).includes(encodeURIComponent(U("pihB"))) && f.metaFav === false && f.metaOffFav === true && f.driftEdges?.closeDisplay === "none" && f.driftEdges.rowR - f.driftEdges.titleR <= 8 && Math.abs(f.driftEdges.subR - f.driftEdges.titleR) <= 1.5 && f.driftEdges.titleOverflow === "ellipsis" && f.driftEdges.titleMask === "none", "已偏离固定行 · 图标区 hover（rel48 ①：图标换成保存网址的 favicon，按 ⌘ 换回当前页图标，松开再换成保存图标）：标题上移 7、第二行 Back to Pinned URL、「−」隐藏、斜杠 α0；按住 ⌘ 第二行 Separate From Pinned Tab、松开换回（第 68 项，canResetTab=true；rel46：斜杠只在图标区隐藏，data-hz=icon 驱动；rel47：⌘ 文案）", f);
+        expect(di?.blocked === true && f.driftIconTip === 0 && f.driftLeftEdge === "icon" && f.driftSlashLeft === "icon", "图标区（行左缘 → 斜杠左缘）不弹行 tooltip；左缘与斜杠左侧都算图标区（第 69 项）", f);
+        expect(!!db && db.hz === null && db.titleDy === 0 && db.sub?.opacity === "0" && db.slash === "1" && db.favSwap === false, "已偏离固定行 · 标题区 hover：标题不动、无第二行、「−」显示、斜杠仍显示 α1（第 70 项；rel46 用户在真 Arc 实测：标题 / 空白区悬停「/」保持显示）", f);
+        expect(!!ri && ri.hz === "icon" && ri.blocked === true && ri.titleDy === -7 && ri.close === "0" && ri.sub?.opacity === "1" && ri.favSwap === true && parseFloat(ri.subLeft) > 0 && Math.abs(parseFloat(ri.subLeft) - (f.drift.titleLeft - f.drift.row[0])) < 1.5 && f.separate?.newTab === true && f.separate.curUrl === "https://example.org/?arcselftest=pih-drifted" && f.separate.curKeptActive === true && f.separate.pinnedBound === true && f.separate.oldStillPinned === false, "（rel47 ⑦ 并入：⌘ + 单击图标区 = 分离当前页——固定项改绑按保存网址新开的标签，原当前页保持原网址 / 选中状态、不再是固定项；reducer 源码未找到，最小实现）整屏重绘摘掉悬停态后，指针仍在图标区 → REHOVER 重判：data-hz / tip-blocked / 副标题左缘（= 标题左缘）都补回（第 71 项）", f);
+        expect(f.rehoverBody === null, "整屏重绘后指针在标题区 → REHOVER 不置位（第 72 项）", f);
         return f;
     });
 
@@ -2977,10 +3464,10 @@ async function main() {
         const res: string[] = [];
         for (const [i, u] of urls.toReversed().entries()) {
             await run("undo.reopenTab");
-            const back = await until(async () => (await chrome.tabs.query({})).find(x => (x.url ?? x.pendingUrl) === u), 4000);
+            const back = await until(async () => (await chrome.tabs.query({})).find(x => (x.url || x.pendingUrl) === u), 4000);
             expect(back, `第 ${i + 1} 次应恢复 ${u}`);
             mine.add(back.id!);
-            const others = (await chrome.tabs.query({})).filter(x => urls.slice(0, 2 - i).includes(x.url ?? x.pendingUrl ?? "")).length;
+            const others = (await chrome.tabs.query({})).filter(x => urls.slice(0, 2 - i).includes(x.url || x.pendingUrl || "")).length;
             expect(!others, `第 ${i + 1} 次一次恢复了多个标签`);
             res.push(`${i + 1}:ok`);
         }
@@ -3042,7 +3529,7 @@ async function main() {
         const findTile = async () => { const f = await favNow(); return $$(".arc-fav-tile").find(x => matchTile(x, f)); };
         const tile2 = await until(findTile, 3000).catch(() => null) /* 预期失败：轮询超时即“没等到”，由后续断言判定 */;
         if (tile2) click(tile2);
-        const reopened = await until(async () => (await chrome.tabs.query({})).find(x => (x.url ?? x.pendingUrl ?? "").includes("favglob")), 4000);
+        const reopened = await until(async () => (await chrome.tabs.query({})).find(x => (x.url || x.pendingUrl || "").includes("favglob")), 4000);
         await run("space.prev"); await until(async () => (await activeSid()) === a, 3000);
         if (reopened) mine.add(reopened.id!);
         expect(fav && b && tile && reopened, "收藏全局", { fav: !!fav, b: !!b, tile: !!tile, reopened: !!reopened });
@@ -3096,9 +3583,9 @@ async function main() {
         const hung: string[] = [];
         const run = (id: string, arg?: unknown) => Promise.race([runAvail(id, arg), sleep(8000).then(() => { hung.push(id); return undefined; })]);
         const t = await newTab(U("cmdx"), true); await chrome.windows.update(selfWin, { focused: true }).catch(stCatch("windows.update")); await sleep(300);
-        const n0 = (await chrome.tabs.query({})).filter(x => (x.url ?? x.pendingUrl ?? "").includes("cmdx")).length;
+        const n0 = (await chrome.tabs.query({})).filter(x => (x.url || x.pendingUrl || "").includes("cmdx")).length;
         await run("tab.duplicate");
-        const dup = await until(async () => { const l = (await chrome.tabs.query({})).filter(x => (x.url ?? x.pendingUrl ?? "").includes("cmdx")); l.forEach(x => mine.add(x.id!)); return l.length === n0 + 1; }, 4000);
+        const dup = await until(async () => { const l = (await chrome.tabs.query({})).filter(x => (x.url || x.pendingUrl || "").includes("cmdx")); l.forEach(x => mine.add(x.id!)); return l.length === n0 + 1; }, 4000);
         const copied = await run("tab.copyUrl");
         const copyOk = typeof copied === "string" && copied.includes("cmdx");
         await chrome.tabs.update(t.id!, { active: true }); await chrome.windows.update(selfWin, { focused: true }).catch(stCatch("windows.update")); await sleep(200);
@@ -3128,7 +3615,7 @@ async function main() {
         const archived = Array.isArray(gone) && gone.includes(t.id) && await until(async () => !(await chrome.tabs.query({})).some(x => x.id === t.id), 3000);
         const inArchive = await until(async () => JSON.stringify(await data<any>("archive") ?? "").includes("arcselftest=aa"), 3000);
         await run("undo.last");
-        const back = await until(async () => { const x = (await chrome.tabs.query({})).find(y => (y.url ?? y.pendingUrl ?? "").includes("arcselftest=aa")); if (x) mine.add(x.id!); return !!x; }, 4000);
+        const back = await until(async () => { const x = (await chrome.tabs.query({})).find(y => (y.url || y.pendingUrl || "").includes("arcselftest=aa")); if (x) mine.add(x.id!); return !!x; }, 4000);
         await backToSelf();
         expect(notYet && resetOk && archived && inArchive && back, "自动归档", { notYet, resetOk, archived, inArchive, back, after: AR.after });
         return "1h 不归档 / 11h 前活跃 + 查看后 6h 不归档 / 13h 归档进资料库 / Mod+Z 撤销";
@@ -3136,32 +3623,197 @@ async function main() {
     });
 
     await test("行为 · 重启后状态：固定项记着的旧 tabId 失效时按网址重新挂到恢复出来的标签（模拟重启）", async () => {
+        /* rel46 稳定性（rel45 full 里出现 1 次 {node:true,re:false,shown:false}；同一树单跑自测页 3 次全绿；用例与 rel44 逐行相同，产品无差异）。
+         * 失败形态 = 固定项没被挂回（tabId 仍是旧值 → 行是 unloaded）。reattachByUrl 只按「固定项保存的网址」找同网址标签（reattach.ts:take），
+         * 而 pinTab 存的是 tab.url（index.ts:51）——标签还没提交首次导航时 url 是 ""（只有 pendingUrl），存下来的网址为空 → 重启后按网址永远挂不回。
+         * 原用例只等到“标签行出现”就固定，前置状态没就绪。本次加固（断言一条没放松）：
+         * ① 固定前先等标签真正提交了网址（tab.url 非空，8s；软等待，到点不抛——照旧往下走，失败详情里会写明）；
+         * ② 固定后再等固定项记下了网址（3s，软）——这是前置状态，不是被测行为；
+         * ③ 挂接结果的等待窗口 4s/3s → 10s/8s（until 提前成功就返回，只在慢的时候多等；单调时钟；re 已失败时 shown 只再等 1.5s，给诊断留时间）；
+         * ④ 失败时 expect 详情带 diag：固定项（id/tabId/url）、真实标签（url/pendingUrl/status）、同网址标签、面板里固定行状态、可见性 / 时钟事件，
+         *    以及「手动 pin.reattach 一次能否挂上」（只在已判失败后探测：能挂上 = 启动时那次没跑到 / 窗口不够；挂不上 = 固定项没存到网址）；
+         * ⑤ 各阶段 stage()，30s 单项超时的报错里带“最后阶段”。 */
+        const stage = stageT0(); stage("start");
+        const OLD = 987654321;
         const t = await newTab(U("restart"));
+        stage("等标签提交网址");
+        const tabNow = async () => chrome.tabs.get(t.id!).catch(stCatch("tabs.get", undefined as chrome.tabs.Tab | undefined));
+        const committed = !!(await until(async () => !!(await tabNow())?.url, 8000));
+        stage("固定");
         await pinRow(row(U("restart"))!);
-        const node = await until(async () => walkAll(await pinnedNodes()).find(n => n.tabId === t.id), 3000);
+        const ownNode = async () => walkAll(await pinnedNodes()).find(n => n.tabId === t.id);
+        const node = await until(ownNode, 4000);
+        stage("等固定项记下网址");
+        const urlSaved = !!(await until(async () => !!(await ownNode())?.url, 3000));
         const d = await data<any>("pinned");
-        for (const l of Object.values(d.bySpace) as any[]) for (const n of walkAll(l)) if (n.id === node?.id) n.tabId = 987654321;
+        for (const l of Object.values(d.bySpace) as any[]) for (const n of walkAll(l)) if (n.id === node?.id) n.tabId = OLD;
         await chrome.storage.local.set({ "data:pinned": d });
+        // 补丁 rel63-fav-reattach（a）：按网址重新挂接只在真的浏览器重启后跑（storage.session 标记，reattach.ts）。清掉标记 = 模拟重启（重启时 session 存储本来就是空的）
+        await chrome.storage.session.remove("pinnedReattach:session");
+        stage("重载侧栏");
         await reloadPanel();
-        const re = await until(async () => walkAll(await pinnedNodes()).find(n => n.id === node?.id)?.tabId === t.id, 4000);
-        const shown = !!(await until(() => $$(".arc-pinned .arc-tab").find(x => textOf(x).startsWith(U("restart")) && !x.classList.contains("unloaded")), 3000));
-        expect(node && re && shown, "重启重新挂接", { node: !!node, re, shown });
-        return "旧 id → 按网址挂回同一标签，不重复打开";
+        stage("等重新挂接");
+        const nodeById = async () => walkAll(await pinnedNodes()).find(n => n.id === node?.id);
+        const re = await until(async () => (await nodeById())?.tabId === t.id, 10000);
+        stage("等固定行显示");
+        const shown = !!(await until(() => $$(".arc-pinned .arc-tab").find(x => textOf(x).startsWith(U("restart")) && !x.classList.contains("unloaded")), re ? 8000 : 1500)); // re 已失败时不再干等：留出时间给下面的诊断（30s 单项超时内）
+        if (node && re && shown) return "旧 id → 按网址挂回同一标签，不重复打开";
+        stage("失败诊断");
+        const diag: Record<string, unknown> = { committed, urlSaved };
+        try {
+            const nn = await nodeById(); const tb = await tabNow(); const all = await chrome.tabs.query({});
+            diag.node = nn ? { id: nn.id, tabId: nn.tabId, url: nn.url ?? null } : null;
+            diag.tab = tb ? { id: tb.id, url: tb.url ?? null, pendingUrl: tb.pendingUrl ?? null, status: tb.status, discarded: tb.discarded } : null;
+            diag.sameUrl = all.filter(x => (x.url || x.pendingUrl || "").startsWith(U("restart"))).map(x => x.id);
+            diag.rows = $$(".arc-pinned .arc-tab").filter(x => textOf(x).startsWith(U("restart"))).map(x => x.className.replace(/\barc-tab\b/, "").trim());
+            diag.vis = document.visibilityState; diag.clock = (globalThis as any).__clockDiag?.();
+            const probe = await Promise.race([run("pin.reattach"), sleep(5000).then(() => "超时")]).catch(stCatch("pin.reattach", "异常"));
+            await sleep(300);
+            diag.manualReattach = { ret: probe, nowTabId: (await nodeById())?.tabId ?? null, ok: (await nodeById())?.tabId === t.id };
+        } catch (e) { diag.diagError = String((e as Error)?.message ?? e); }
+        expect(false, "重启重新挂接", { node: !!node, re, shown, diag: JSON.stringify(diag).slice(0, 700) });
+    });
+
+    await test("行为 · 收藏关标签后不吞并同网址 Today 标签（rel63 #2）：关掉 → tabId 清空；会话中途重载侧栏不按网址改绑", async () => {
+        /* 补丁 rel63-fav-reattach：复现 rel63-logs/rootcause.md §2（repro/r63.ts A0–A4）。原来关掉收藏自己的标签后 tabId 留着死 id，
+         * 下一次 panel.start（侧栏 iframe 每次页面加载都会启动）的 reattachByUrl 把一个无关的同网址 Today 标签吞进收藏（从 Today 消失）。
+         * (b) 关标签 → background tabs.onRemoved 清 tabId（记 closedTabId）；(a) 即使数据里留着死 id（老版本留下的），会话中途的 panel.start 也不再按网址改绑。 */
+        const stage = stageT0(); stage("start");
+        const URL1 = U("favre63");
+        const t1 = await newTab(URL1);
+        await until(async () => !!(await chrome.tabs.get(t1.id!).catch(() => undefined))?.url, 6000);
+        await favRow(row(URL1)!);
+        const favOf = async () => ((await data<any>("favorites"))?.items ?? []).find((i: any) => i.url === URL1);
+        const fy0 = await until(async () => { const f = await favOf(); return f?.tabId === t1.id ? f : null; }, 4000);
+        expect(fy0, "fav.add 后收藏没绑定到该标签", await favOf());
+        try {
+            stage("关收藏自己的标签");
+            await chrome.tabs.remove(t1.id!);
+            const cleared = await until(async () => { const f = await favOf(); return f && f.tabId == null ? f : null; }, 4000);
+            expect(cleared && cleared.closedTabId === t1.id, "关掉收藏的标签后 tabId 没清空（onRemoved）", await favOf());
+            stage("开同网址的普通标签 T4");
+            const t4 = await newTab(URL1);
+            await until(() => row(URL1, ".arc-today"), 4000);
+            stage("留一个死 id + 会话中途标记 → 重载侧栏");
+            const OLD = 987654322;
+            const d = await data<any>("favorites");
+            for (const i of d.items) if (i.id === fy0.id) i.tabId = OLD;
+            await chrome.storage.local.set({ "data:favorites": d });
+            await chrome.storage.session.set({ "pinnedReattach:session": { at: Date.now() - 10 * 60_000 } });
+            await reloadPanel(); await sleep(800);
+            const fy = await favOf();
+            const inToday = !!(await until(() => row(URL1, ".arc-today"), 3000));
+            const tileActive = !!$(`.arc-fav-tile[data-fav="${fy0.id}"]`)?.classList.contains("active");
+            expect(fy?.tabId !== t4.id && inToday && !tileActive, "会话中途重载侧栏后同网址的 Today 标签被吞进收藏", { favTabId: fy?.tabId, t4: t4.id, inToday, tileActive });
+            return `关掉 → tabId 清空（closedTabId=${cleared.closedTabId}）；死 id + 重载 → 仍是 ${fy?.tabId}，T4 留在 Today`;
+        } finally {
+            const d = await data<any>("favorites");
+            if (d?.items) { d.items = d.items.filter((i: any) => i.id !== fy0.id); await chrome.storage.local.set({ "data:favorites": d }); }
+            await sleep(300);
+        }
+    });
+
+    /* 补丁 rel64-prev-seed（rel64 #1，rel64-logs/rootcause.md §1）：页内侧栏每个标签一个 iframe，新标签 / 收藏打开 / ⌘Z 重开的标签的 iframe 是激活之后才生出来的，
+     * 原来 PrevTab 的 prev 为空 → 上一个标签行没有 .arc-prev。现在启动时用 tab.lastAccessed 取同窗口第二近访问的标签做种子。
+     * 这里的“新侧栏”= 激活之后重载自测页里的侧栏 iframe：新文档没收到过任何 onActivated，和新标签里新生的页内 iframe 一样只能靠种子。
+     * 每种情形：先激活 X，再走真实入口打开新标签（tabs.create / 点收藏磁贴 / undo.reopenTab），确认新标签已激活 → 重载侧栏 → X 行带 .arc-prev，且没有别的行（含固定行）带。
+     * 三种情形各自一项（单项 30s 上限，三次重载放一项里余量不够）。 */
+    const pv64Active = async () => (await chrome.tabs.query({ active: true, windowId: selfWin }))[0]?.id;
+    const pv64Activate = async (id: number) => { await chrome.tabs.update(id, { active: true }); await until(async () => (await pv64Active()) === id, 3000); await sleep(250); };
+    const pv64Check = async (what: string, prevId: number, curId: number, stage: (s: string) => void) => {
+        stage(`${what}：重载侧栏`);
+        expect((await pv64Active()) === curId, `${what}：新标签没有成为当前标签`, { curId, active: await pv64Active() });
+        await reloadPanel();
+        const el = await until(() => { const e = $(`.arc-tab[data-sel="tab:${prevId}"]`); return e?.classList.contains("arc-prev") ? e : null; }, 4000);
+        const prevRows = $$(".arc-tab.arc-prev").map(e => e.dataset.sel);
+        expect(!!el && prevRows.length === 1 && !prevRows.some(s => s?.startsWith("pin:")), `${what}：新侧栏里上一个标签行（tab:${prevId}）没有 .arc-prev`, { prevId, curId, active: await pv64Active(), prevRows, hasRow: !!$(`.arc-tab[data-sel="tab:${prevId}"]`) });
+        await backToSelf(); await sleep(200);
+        return `${what}：新侧栏 prev=tab:${prevId}（当前 tab:${curId}）`;
+    };
+
+    await test("上一个标签 · 新侧栏启动即有种子（rel64 #1）：新标签——激活 A 后新建并激活 B，新生的侧栏里 A 行带 .arc-prev", async () => {
+        const stage = stageT0(); stage("start");
+        const a = await newTab(U("pv64a"));
+        await pv64Activate(a.id!);
+        const b = await within(chrome.tabs.create({ url: U("pv64b"), active: true, windowId: selfWin }), 12000, "新建标签 pv64b"); mine.add(b.id!);
+        await until(async () => (await pv64Active()) === b.id, 3000); await sleep(200);
+        return pv64Check("新标签", a.id!, b.id!, stage);
+    });
+
+    await test("上一个标签 · 新侧栏启动即有种子（rel64 #1）：收藏打开——激活 C 后点未打开的收藏磁贴，新生的侧栏里 C 行带 .arc-prev", async () => {
+        const stage = stageT0(); stage("start");
+        const FID = "st64prevfav", FURL = U("pv64fav");
+        const favSaved = await data<any>("favorites");
+        const favOf = async () => ((await data<any>("favorites"))?.items ?? []).find((i: any) => i.id === FID);
+        try {
+            await chrome.storage.local.set({ "data:favorites": { ...(favSaved ?? {}), items: [...(favSaved?.items ?? []).filter((i: any) => i.id !== FID), { id: FID, url: FURL, title: "PV64" }] } });
+            const c = await newTab(U("pv64c"));
+            await pv64Activate(c.id!);
+            const tile = await until(() => $(`.arc-fav-tile[data-fav="${FID}"]`), 4000);
+            expect(tile, "收藏磁贴没出现", { favs: $$(".arc-fav-tile").map(e => e.dataset.fav) });
+            stage("点收藏磁贴");
+            click(tile!);
+            const ft = await until(async () => { const f = await favOf(); const t = f?.tabId != null ? await chrome.tabs.get(f.tabId).catch(() => undefined) : undefined; return t?.active ? t : null; }, 6000);
+            expect(ft, "点收藏磁贴后没有打开并激活收藏自己的标签", { fav: await favOf(), active: await pv64Active() });
+            mine.add(ft!.id!); await sleep(200);
+            return await pv64Check("收藏打开", c.id!, ft!.id!, stage);
+        } finally {
+            const d = await data<any>("favorites");
+            if (d?.items) { d.items = d.items.filter((i: any) => i.id !== FID); await chrome.storage.local.set({ "data:favorites": d }); }
+            await sleep(300);
+        }
+    });
+
+    await test("上一个标签 · 新侧栏启动即有种子（rel64 #1）：⌘Z 重开——关掉 Z、激活 E 后 undo.reopenTab，新生的侧栏里 E 行带 .arc-prev", async () => {
+        const stage = stageT0(); stage("start");
+        const ZURL = U("pv64z");
+        const z = await newTab(ZURL), e = await newTab(U("pv64e"));
+        stage("关掉 Z");
+        mine.delete(z.id!); await chrome.tabs.remove(z.id!); await sleep(600);
+        await pv64Activate(e.id!);
+        stage("undo.reopenTab");
+        await run("undo.reopenTab");
+        const back = await until(async () => (await chrome.tabs.query({ windowId: selfWin })).find(x => (x.url || x.pendingUrl) === ZURL && x.id !== z.id), 5000);
+        expect(back, "undo.reopenTab 没有重开刚关掉的标签");
+        mine.add(back!.id!);
+        await until(async () => (await pv64Active()) === back!.id, 3000); await sleep(200);
+        return pv64Check("⌘Z 重开", e.id!, back!.id!, stage);
     });
 
     await test("行为 · 新标签位置设置：顶部 / 底部", async () => {
+        /* rel43 稳定性（rel42 全量里出现过一次 30s 单项超时，同一树单独重跑 / 其余 8 次自测页都过；本体最坏 ≈12s，所以 30s = 某个没上限的 await 挂住）：
+         * ① 自测页先回前台：后台页的 setTimeout 被节流（≥1s；隐藏 5 分钟后 1 次 / 分钟），多段 sleep / until 会把 12s 拖过 30s；
+         * ② chrome.tabs.create 加 12s 上限，超时报出是创建卡住；各阶段写 stage()，单项超时的报错里会带“最后阶段”；
+         * ③ 设置先确认已落到面板 store 和 chrome.storage（别的上下文的旧快照回声可能把它改回去，改回就再写一次），再建标签；
+         * ④ 位置按“等到出现”轮询（不再固定 sleep 300 后单次快照）；失败时详情里有面板 / 存储里的 order 和 Today 列表；⑤ 失败 / 超时都在 finally 里还原设置，不留给后面的用例。
+         * 断言一条没放松：底部 → 新标签在 Today 最后；顶部 → 在最前。 */
+        const stage = stageT0(); stage("start");
+        await backToSelf(); await sleep(150);
         const S = P.ArcSidebar.Settings.plugins.Tabs;
         const prev = S.order;
-        S.order = "bottom"; await sleep(300);
-        await newTab(U("posb")); await sleep(300);
-        const list1 = $$(".arc-today .arc-tab");
-        const bottom = textOf(list1.at(-1)).startsWith(U("posb"));
-        S.order = "top"; await sleep(300);
-        await newTab(U("post")); await sleep(300);
-        const top = textOf($$(".arc-today .arc-tab")[0]).startsWith(U("post"));
-        S.order = prev ?? "top";
-        expect(bottom && top, "新标签位置", { bottom, top, first: textOf($$(".arc-today .arc-tab")[0]), last: textOf(list1.at(-1)) });
-        return "底部 ✓ 顶部 ✓";
+        const stored = async () => (await chrome.storage.local.get("ArcSidebarSettings")).ArcSidebarSettings?.plugins?.Tabs?.order;
+        const setOrder = async (v: "top" | "bottom") => {
+            stage(`set ${v}`);
+            const ok = await until(async () => { if (S.order !== v) S.order = v; return S.order === v && (await stored()) === v; }, 4000);
+            expect(ok, `新标签位置：order=${v} 没落到面板 store / chrome.storage`, { panel: S.order, stored: await stored() });
+            await sleep(150); // 让一次整屏重绘先过去
+        };
+        const mk = async (key: string) => { stage(`create ${key}`); const t = await within(newTab(U(key)), 12000, `新建标签 ${key}`); stage(`created ${key}`); return t; };
+        const todayTexts = () => $$(".arc-today .arc-tab").map(x => textOf(x).replace(/^https:\/\/example\.com\/\?arcselftest=/, ""));
+        try {
+            await setOrder("bottom");
+            await mk("posb");
+            const bottom = !!(await until(() => textOf($$(".arc-today .arc-tab").at(-1)).startsWith(U("posb")), 4000));
+            const diagB = { panel: S.order, stored: await stored(), today: todayTexts() };
+            await setOrder("top");
+            await mk("post");
+            const top = !!(await until(() => textOf($$(".arc-today .arc-tab")[0]).startsWith(U("post")), 4000));
+            const diagT = { panel: S.order, stored: await stored(), today: todayTexts() };
+            expect(bottom && top, "新标签位置", { bottom, top, diagB, diagT });
+            return "底部 ✓ 顶部 ✓";
+        } finally {
+            S.order = prev ?? "top"; await sleep(100);
+        }
     });
 
     await test("地址框：域名在左，复制链接 / 站点控制按钮在右（同 Arc）", async () => {
@@ -3655,11 +4307,165 @@ async function main() {
         await chrome.storage.local.set({ ArcSidebarSettings: st });
         return String(o ?? "auto");
     });
+
+    await test("标题字号 14（font-size-14，rel42，SELFTEST 73–80）：Tab 标题 / 行内编辑框 14 Regular、文件夹标题 / 编辑框 14 Semibold、副标题 11；行 36 / pitch 41、标题起点 44 / 46、偏离 hover −7 的两行居中都不变；--arc-fs 13、Space 标题 / New Tab / 命令栏列表行不受影响", async () => {
+        /* rel43 诊断结论（读 rel42-logs 的 st-dev2 / dev3 / dbg 日志）：第 78 项 colOf(偏离行) = null 不是“偏离行结构里量不到图标 / 标题”——dev2 的 dbg 是 {dr:false, ic:false, tt:false}，即 **dr 本身就是 null：固定区里根本没有 tA 的行（或它没有 svg.arc-drift）**。
+         * 原因在用例自己：①「固定 tA」和「导航到 example.org」之后的两个 until 都没断言——超时（5s / 8s）静默过去，dr = undefined，一路量到最后只剩 colOf=null；
+         * ②固定后没有等 data:pinned 里该项记下网址（drifted(n, tab) 在 !n.url 时恒为 false，见 pinnedTabs/index.ts:107），也没像兄弟用例（title-column / pinned-icon-hover）那样固定后再停 400ms 才导航；③tA 创建后没等加载完成就固定（tab.url 可能还是空 → n.url 空）。
+         * rel43 改动：创建后等 complete；固定后等行 + 固定项网址 + 400ms；偏离行没出现时记录诊断（dr.outerHTML / ICON 匹配 / 标题是否在 / 固定项 / pinTab / 标签 url 与状态）并再导航一次（写入 retried）；诊断随第 78 项的失败详情一起报出。
+         * ⏭ 以下是 rel42 的 skip 说明（已于 rel43 取消 skip，断言一条没改）：本用例在全量里剩一个未解的不稳定点——第 78 项量偏离行标题起点时 colOf(偏离固定行) = null（找不到行 / 图标 / 标题，原因未诊断），
+         * 其余断言（73–77：字号 / 字重 / 行高 36 / pitch 41 / 改名框）在同一轮里都过。已修的两处：①紧跟「恢复界面语言设置」后侧栏再重载，P / D 是旧文档（开头已重取）；②folder.new 后行内编辑框偶尔被重渲染吞掉（已加一次重试）。
+         * rel43：给偏离行那段加诊断（dr.outerHTML / ICON / title 是否在），修好后把 SKIP_FS14 改 false。字号 CSS 本身照常发布，不受影响。断言一条没改。 */
+        const SKIP_FS14 = false;
+        if (SKIP_FS14) throw new Skip("rel42 skip / rel43 TODO：第 78 项偏离行 colOf 偶发 null（见本用例开头注释）；字号 CSS 已发布，73–77 在全量里通过");
+        /* 来源：Rea font-sizes.md（Arc 1.169.0 反编译）：Tab 标题 label.withSize(14) Regular、Tab 行内编辑框同 titleFont、文件夹标题 / 编辑框 listHeader 14 Semibold、副标题 subLabel 11；
+         * Space 标题 13 Semibold（sectionHeader，不动）、New Tab 14（早已是）。⛔ 活动标签标题字重 500 源码未找到（沿用，不测）。数值只来自源码，不来自截图。
+         * 量法：全相对量（图标左缘 → 标题文字左缘、行高、相邻行 top 差、clientWidth / 截断字符数）；截断点 = 把 120 个数字（等宽近似）塞进克隆行的标题里，二分找标题框（clientWidth）里放得下几个字符。 */
+        /* 稳定性：全量自检跑到这里时已切回用户原空间（里面固定区 / 文件夹状态不可控），所以在自己新建的空间里量，结束时切回并删除 */
+        /* 稳定性（rel42）：前一个用例「恢复界面语言设置」改回语言后侧栏会再重载一次，这时 P / D 还指着旧文档（diag：D !== P.document、界面停在 Personal、folder.new 写不进界面）。
+         * 先等侧栏文档连续 700ms 不再换新，再重新拿 P / D，然后才开始量。 */
+        for (let i = 0; i < 8; i++) {
+            const w = frame.contentWindow as any, d = w?.document;
+            if (w?.ArcSidebar?.plugins?.TodayTabs?.started) { await sleep(700); if (frame.contentWindow === w && w.document === d) { P = w; D = d; P.prompt = () => "SelfTest"; P.confirm = () => true; (P as any).__arcDialogAuto = { confirm: () => true, prompt: () => (globalThis as any).__promptAnswer ?? "SelfTest" }; break; } } else await sleep(500);
+        }
+        const fsSpace = await rpc<string>("spaces:create", "FS14", "");
+        await until(async () => (await data<any>("spaces")).activeId === fsSpace, 4000);
+        await until(() => $(".arc-space-title")?.textContent?.includes("FS14"), 3000);
+        const stage = stageT0(); stage("fs14 start");
+        const tA = await newTab(U("fsA")), tB = await newTab(U("fsB"));
+        await until(async () => (await chrome.tabs.get(tA.id!)).status === "complete", 8000); // rel43：固定时 tab.url 必须已有（n.url 空 → 永远不偏离）
+        const todayRow = (id: number) => $(`.arc-today .arc-tab[data-sel="tab:${id}"]`);
+        const pinnedRow = (id: number) => $$(".arc-pinned .arc-tab").find(x => pinTab.get(x.dataset.sel ?? "") === id);
+        const R = (e: Element | null | undefined) => { const q = e?.getBoundingClientRect(); return q ? { l: q.left, r: q.right, t: q.top, b: q.bottom, w: q.width, h: q.height, cy: q.top + q.height / 2 } : null; };
+        const CS = (e: Element | null | undefined) => { const c = e ? getComputedStyle(e) : null; return c ? { fs: c.fontSize, fw: c.fontWeight, lh: c.lineHeight } : null; };
+        const textL = (el: Element | null | undefined) => { if (!el) return null; const n = D.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode(); if (!n) return R(el)!.l; const rg = D.createRange(); rg.selectNodeContents(n); return rg.getBoundingClientRect().left; };
+        const glyphCy = (el: Element | null | undefined) => { const n = el ? D.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode() : null; if (!n) return null; const rg = D.createRange(); rg.selectNodeContents(n); const q = rg.getBoundingClientRect(); return { cy: q.top + q.height / 2, h: q.height }; };
+        const LONG = "0123456789".repeat(12);
+        /** 克隆一行、把标题换成 LONG，量标题框与放得下的字符数（同步，不让侧栏重绘插进来） */
+        const trunc = (row: HTMLElement) => {
+            const c = row.cloneNode(true) as HTMLElement; c.removeAttribute("data-sel"); c.setAttribute("data-fsprobe", "1");
+            const t = c.querySelector<HTMLElement>(".arc-tab-title")!; t.textContent = LONG; row.after(c);
+            const cw = t.clientWidth, sw = t.scrollWidth, node = t.firstChild!; let lo = 0, hi = LONG.length;
+            while (lo < hi) { const m = (lo + hi + 1) >> 1, rg = D.createRange(); rg.setStart(node, 0); rg.setEnd(node, m); if (rg.getBoundingClientRect().width <= cw + 0.01) lo = m; else hi = m - 1; }
+            const out = { titleW: cw, scrollW: sw, fit: lo, rowW: R(c)?.w }; c.remove(); return out;
+        };
+        const ICON = ".arc-fav, .arc-folder-icon, .arc-svg";
+        const colOf = (row: Element | null | undefined) => { const ic = R(row?.querySelector(ICON)), tx = textL(row?.querySelector(".arc-tab-title")); return ic && tx != null ? +(tx - ic.l).toFixed(2) : null; };
+        const f: Record<string, any> = {};
+        // 文件夹：新建时出现的就是行内编辑框（量它的字号 / 字重，再输入名字 Enter）
+        const diag = () => ({ lang: D.documentElement.lang, space: $(".arc-space-name")?.textContent, pinned: !!$(".arc-pinned"), pinnedVis: $(".arc-pinned")?.checkVisibility() ?? null,
+            slotPinned: $(".arc-slot-pinned")?.getAttribute("data-collapsed") ?? $(".arc-slot-pinned")?.className ?? null, folders: $$(".arc-folder-head").map(x => x.textContent).slice(0, 6), today: $$(".arc-today .arc-tab").length,
+            rowA: !!todayRow(tA.id!), renames: $$(".arc-rename").length, hidden: $$(".arc-pinned, .arc-today").map(x => [x.className, x.checkVisibility()]) });
+        f.diag0 = diag();
+        await run("folder.new");
+        let finp = await until(() => $$(".arc-rename")[0] as HTMLInputElement | undefined, 3000);
+        /* 稳定性（同「文件夹折叠」用例）：新建后行内命名偶尔被重渲染吞掉 → 记录原因再试一次；仍失败照常判失败 */
+        if (!finp) { retried.push("字号：folder.new 后行内编辑框首次未出现"); await run("folder.new"); finp = await until(() => $$(".arc-rename")[0] as HTMLInputElement | undefined, 3000); }
+        if (!finp) expect(false, "folder.new 后没出现行内编辑框", { before: f.diag0, after: diag() });
+        f.folderInput = finp ? { parent: finp.parentElement?.className, ...CS(finp), h: R(finp)?.h } : null;
+        await typeInline("FS14");
+        await until(() => $$(".arc-folder-head").find(x => x.querySelector(".arc-tab-title")?.textContent === "FS14"));
+        // 两种侧栏宽度（iframe 宽，默认 320；Arc 侧栏默认 228）：标题框宽 / 能放几个字符
+        const rA = todayRow(tA.id!);
+        const nb = [rA?.nextElementSibling, rA?.previousElementSibling].find(x => x?.classList.contains("arc-tab")) as HTMLElement | undefined;
+        f.pitch = rA && nb ? +Math.abs(R(nb)!.t - R(rA)!.t).toFixed(2) : null;
+        const widths: Record<string, any> = {};
+        for (const W of [320, 228]) {
+            frame.style.width = `${W}px`; await sleep(350);
+            const a = await until(() => todayRow(tA.id!)), h2 = await until(() => $$(".arc-folder-head").find(x => x.querySelector(".arc-tab-title")?.textContent === "FS14"));
+            widths[W] = { frame: R(frame)!.w, tab: a ? trunc(a) : null, folder: h2 ? trunc(h2) : { missing: $$(".arc-folder-head").map(x => x.textContent) }, tabRowH: R(a)?.h, folderRowH: R(h2)?.h };
+        }
+        frame.style.width = ""; await sleep(300);
+        f.widths = widths;
+        // 标题样式 / 起点（Today 行与文件夹行）
+        const a0 = todayRow(tA.id!), fh0 = $$(".arc-folder-head").find(x => x.querySelector(".arc-tab-title")?.textContent === "FS14");
+        f.tab = { ...CS(a0?.querySelector(".arc-tab-title")), rowH: R(a0)?.h, col: colOf(a0), glyph: glyphCy(a0?.querySelector(".arc-tab-title")), rowCy: R(a0)?.cy };
+        f.folder = { ...CS(fh0?.querySelector(".arc-tab-title")), rowH: R(fh0)?.h, col: colOf(fh0), iconW: R(fh0?.querySelector(".arc-folder-icon"))?.w, glyph: glyphCy(fh0?.querySelector(".arc-tab-title")), rowCy: R(fh0)?.cy };
+        // Tab 行内编辑框：双击标题 → input.arc-rename（真实入口）
+        const tt = todayRow(tB.id!)?.querySelector<HTMLElement>(".arc-tab-title");
+        tt?.dispatchEvent(new P.MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+        const tin = await until(() => todayRow(tB.id!)?.querySelector<HTMLInputElement>("input.arc-rename"));
+        f.tabInput = tin ? { ...CS(tin), h: R(tin)?.h, rowH: R(todayRow(tB.id!))?.h } : null;
+        tin?.dispatchEvent(new P.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await sleep(150);
+        // 偏离固定行：标题起点 46、hover 图标区 → 标题 −7 + 11px 副标题，两行整体居中于行
+        /* rel43：偏离行的诊断快照（偏离行没出现 / 量不到时随失败详情报出） */
+        const driftDiag = async () => {
+            const d0 = pinnedRow(tA.id!), tab = await chrome.tabs.get(tA.id!).catch(() => undefined) /* 诊断用：标签可能已关 */;
+            return { dr: d0?.outerHTML.slice(0, 700) ?? null, ICON: d0 ? [...d0.querySelectorAll(ICON)].map(e => String((e as any).className?.baseVal ?? e.className)) : null, titleIn: !!d0?.querySelector(".arc-tab-title"), slashIn: !!d0?.querySelector(".arc-drift"),
+                tab: tab && { url: tab.url, pendingUrl: tab.pendingUrl, status: tab.status, active: tab.active }, nodes: walkAll(await pinnedNodes()).filter(n => n.tabId === tA.id).map(n => ({ id: n.id, url: n.url, tabId: n.tabId })),
+                pinTab: [...pinTab].filter(([, v]) => v === tA.id), space: (await data<any>("spaces"))?.activeId, activeByWin: (await data<any>("spaces"))?.activeByWin?.[selfWin], fsSpace, pinnedRows: $$(".arc-pinned .arc-tab").map(x => x.dataset.sel).slice(0, 8), pinnedHTML: $(".arc-pinned")?.innerHTML.slice(0, 500) ?? null, sameD: D === P.document };
+        };
+        /* rel43b：pinRow() 末尾的 backToSelf() 激活自测页标签（属 default 空间），spaceManager 的 tabs.onActivated 会把 activeId / activeByWin 切回 default
+         * → 侧栏渲染 default 的固定区，FS14 空间里的固定行不在 DOM 里（rel43 实测 diag：space=default≠fsSpace、pinnedRows=[]）。
+         * 这里直接把 data:spaces 的 activeId / activeByWin[自测页窗口] 写回 fsSpace（不用 spaces:switch——它会激活 FS14 的 lastTab，把自测页挤到后台），
+         * 并等面板显示 FS14；量测前还会再确认一次。前置条件不满足时当场记 diag 到 f.pre（不抛，先走完收尾清理，再在第 78 项前断言）。 */
+        f.pre = [] as { what: string; diag: unknown }[];
+        const needFs = async () => {
+            const cur = await data<any>("spaces");
+            if (cur?.activeId !== fsSpace || cur?.activeByWin?.[selfWin] !== fsSpace) await chrome.storage.local.set({ "data:spaces": { ...cur, activeId: fsSpace, activeByWin: { ...(cur?.activeByWin ?? {}), [selfWin]: fsSpace } } });
+            return !!(await until(async () => { const sp = await data<any>("spaces"); return sp?.activeId === fsSpace && sp?.activeByWin?.[selfWin] === fsSpace && !!$(".arc-space-title")?.textContent?.includes("FS14"); }, 4000));
+        };
+        const must = async (what: string, ok: unknown) => { if (!ok) f.pre.push({ what, diag: await driftDiag() }); return !!ok; };
+        stage("pin tA");
+        await pinRow(todayRow(tA.id!));
+        await must("pinRow 后写回 FS14 空间并显示", await needFs());
+        await must("固定行 pinnedRow(tA) 出现", await until(() => pinnedRow(tA.id!), 5000));
+        await must("固定项节点记下网址（n.url 非空）", await until(async () => walkAll(await pinnedNodes()).find(n => n.tabId === tA.id && n.url), 4000)); // 固定项记下网址后才导航（drifted 依赖 n.url）
+        await sleep(400);
+        const driftShown = () => !!pinnedRow(tA.id!)?.querySelector("svg.arc-drift");
+        const waitDrift = () => until(async () => (await chrome.tabs.get(tA.id!)).status === "complete" && driftShown(), 8000);
+        stage("navigate tA");
+        await chrome.tabs.update(tA.id!, { url: "https://example.org/?arcselftest=fs14-drifted" });
+        if (!(await waitDrift())) {
+            retried.push("字号：偏离行首次未出现（诊断见第 78 项详情的 diag0）");
+            f.driftDiag0 = await driftDiag();
+            await needFs(); // 重试前再确认空间没被切走
+            await chrome.tabs.update(tA.id!, { url: "https://example.org/?arcselftest=fs14-drifted2" });
+            await waitDrift();
+        }
+        await sleep(600);
+        await needFs(); // 量测前再确认一次 activeId
+        await must("偏离行 svg.arc-drift 出现", await until(driftShown, 3000));
+        if (!driftShown()) f.driftDiag = await driftDiag();
+        const dr = pinnedRow(tA.id!), sl = R(dr?.querySelector(".arc-drift")), row = R(dr);
+        const mv = (el: Element, x: number, y: number) => el.dispatchEvent(new P.MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+        const dy = (e: Element | null | undefined) => { const t = e ? getComputedStyle(e).transform : "none"; return t === "none" ? 0 : Math.round(new DOMMatrixReadOnly(t).m42 * 100) / 100; };
+        f.drift = { col: colOf(dr), rowH: row?.h, title: CS(dr?.querySelector(".arc-tab-title")) };
+        if (dr && sl && row) {
+            dr.dispatchEvent(new P.MouseEvent("mouseenter")); mv(dr, sl.l - 1, row.cy); await sleep(300);
+            const ti = dr.querySelector(".arc-tab-title"), sb = dr.querySelector<HTMLElement>(".arc-tab-sub"), tr0 = R(ti), sr = R(sb);
+            f.hover = { hz: dr.getAttribute("data-hz"), titleDy: dy(ti), sub: sb && { ...CS(sb), text: sb.textContent, op: getComputedStyle(sb).opacity }, titleBox: tr0 && [tr0.t - row.t, row.b - tr0.b], subBox: sr && [sr.t - row.t, row.b - sr.b],
+                groupOff: tr0 && sr ? +(((tr0.t + sr.b) / 2) - row.cy).toFixed(2) : null, titleGlyph: glyphCy(ti) };
+            dr.dispatchEvent(new P.MouseEvent("mouseleave"));
+        }
+        // 不该动的：--arc-fs、Space 标题、New Tab、命令栏 / Recent 一类 .arc-list-row 里的 .arc-tab-title
+        const probe = D.createElement("div"); probe.className = "arc-list-row"; probe.innerHTML = '<span class="arc-tab-title">x</span>'; probe.style.cssText = "position:fixed;left:-999px;top:0"; D.body.append(probe);
+        f.untouched = { arcFs: getComputedStyle(D.documentElement).getPropertyValue("--arc-fs").trim(), space: CS($(".arc-space-name")), newtab: CS($(".arc-newtab > span")), listRow: CS(probe.querySelector(".arc-tab-title")) };
+        probe.remove();
+        // 收尾
+        await chrome.tabs.update(tA.id!, { active: true }); await sleep(300); await run("pin.toggle"); await sleep(300);
+        await backToSelf(); await chrome.tabs.remove([tA.id!, tB.id!]).catch(() => { /* 已关 */ }); await sleep(300);
+        if (origActive) await rpc("spaces:switch", origActive).catch(stCatch("rpc spaces:switch")); await rpc("spaces:delete", fsSpace).catch(stCatch("rpc spaces:delete")); await sleep(300);
+        await chrome.storage.local.get("data:pinned").then(async r => { const d = r["data:pinned"]; if (!d) return; const prune = (l: any[]): any[] => l.filter(n => !(n.kind === "folder" && n.title === "FS14")).map(n => ({ ...n, children: n.children ? prune(n.children) : n.children })); for (const k of Object.keys(d.bySpace)) d.bySpace[k] = prune(d.bySpace[k]); await chrome.storage.local.set({ "data:pinned": d }); });
+        const w = (W: number, k: "tab" | "folder") => (f.widths[W] as any)[k] ?? {};
+        expect(f.tab.fs === "14px" && f.tab.fw === "400" && f.tab.lh === "18px", "Tab 标题 14px Regular（行高 18 不变）（第 73 项）", f.tab);
+        expect(f.folder.fs === "14px" && f.folder.fw === "600" && f.folder.lh === "18px", "文件夹标题 14px Semibold（行高 18 不变）（第 74 项）", f.folder);
+        expect(!!f.tabInput && f.tabInput.fs === "14px" && f.tabInput.fw === "400" && f.tabInput.h === 28, "Tab 行内编辑框 14px Regular、高 28 不变（第 75 项）", f.tabInput);
+        expect(!!f.folderInput && /arc-folder-head/.test(f.folderInput.parent) && f.folderInput.fs === "14px" && f.folderInput.fw === "600" && f.folderInput.h === 28, "文件夹行内编辑框 14px Semibold、高 28 不变（第 76 项）", f.folderInput);
+        expect(f.tab.rowH === 36 && f.folder.rowH === 36 && f.tabInput?.rowH === 36 && f.pitch === 41 && [320, 228].every(W => w(W, "tab").rowW > 0 && (f.widths[W] as any).tabRowH === 36 && (f.widths[W] as any).folderRowH === 36), "行高 36、相邻行 pitch 41 不变（两种宽度、改名态都是 36）（第 77 项）", { pitch: f.pitch, tab: f.tab.rowH, folder: f.folder.rowH, widths: f.widths });
+        expect(!f.pre?.length, "偏离行前置条件不满足（第 78 项；rel43b：固定行 / 偏离行没出现）", f.pre);
+        expect(Math.abs(f.tab.col - 26) < 0.6 && Math.abs(f.folder.col - 26) < 0.6 && f.folder.iconW === 17 && Math.abs(f.drift.col - 28) < 0.6, "标题起点不变：Today / 文件夹 = 图标左缘 + 26（44），偏离行 + 28（46）（第 78 项）", { tab: f.tab.col, folder: f.folder.col, drift: f.drift.col, diag0: f.driftDiag0, diag: f.driftDiag });
+        expect(!!f.hover && f.hover.hz === "icon" && f.hover.titleDy === -7 && f.hover.sub?.fs === "11px" && f.hover.sub?.fw === "400" && !!f.hover.sub?.text && Math.abs(f.hover.groupOff) < 0.6 && f.hover.titleBox?.every((x: number) => x >= 0) && f.hover.subBox?.every((x: number) => x >= 0), "偏离行图标区 hover：标题 −7、副标题 11px Regular，两行整体仍居中、都在行内（第 79 项）", f.hover);
+        expect(Math.abs(f.tab.glyph?.cy - f.tab.rowCy) <= 1.5 && Math.abs(f.folder.glyph?.cy - f.folder.rowCy) <= 1.5 && w(320, "tab").fit > 0 && w(320, "tab").scrollW > w(320, "tab").titleW && w(320, "folder").scrollW > w(320, "folder").titleW, "文字竖直居中（≤1.5）；长标题在 320 / 228 都被截断（scrollWidth > clientWidth）（第 80 项）", f);
+        expect(f.untouched.arcFs === "13px" && f.untouched.space?.fs === "13px" && f.untouched.space?.fw === "600" && f.untouched.newtab?.fs === "14px" && f.untouched.listRow?.fs === "13px", "--arc-fs 仍 13px；Space 标题 13px/600、New Tab 14px、命令栏列表行里的 .arc-tab-title 仍 13px（第 80 项）", f.untouched);
+        return f;
+    });
+
     document.title = `Cat 自检：完成 ${VERSION}`;
 }
 /* main() 任何未捕获异常都写成一条 FAIL 并把标题置为“完成（中断）”，框架立刻收到已有结果，而不是看起来卡住、最后报 0 过 / 0 失败 */
 main().catch((e: any) => {
-    rows.push({ name: `自测页中断（在「${(globalThis as any).__current ?? "测试之间"}」）`, status: "fail", detail: String(e?.stack ?? e?.message ?? e).slice(0, 600) });
+    pushRow(`自测页中断（在「${(globalThis as any).__current ?? "测试之间"}」）`, "fail", String(e?.stack ?? e?.message ?? e).slice(0, 600));
     (globalThis as any).__results = rows; (globalThis as any).__current = null; render();
     document.title = `Cat 自检：完成（中断） ${VERSION}`;
 });

@@ -97,8 +97,9 @@ body.arc-popup .arc-overlay[data-overlay="commandBar"] { inset: 0; max-height: n
 .arc-urlbar-btn:focus-visible { opacity: 1; outline: 2px solid color-mix(in srgb, var(--arc-accent) 70%, transparent); outline-offset: -1px; }
 
 /* 站点控制面板（Arc：地址栏左侧图标） */
-.arc-menu.arc-panel.arc-site-controls { width: min(300px, calc(100vw - 16px)); padding: 8px; gap: 6px; border-radius: 14px; display: flex; flex-direction: column; }
-.arc-sc-top { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.arc-menu.arc-panel.arc-site-controls { width: min(236px, calc(100vw - 16px)); padding: 10px; gap: 10px; border-radius: 14px; display: flex; flex-direction: column; } /* ✅ Arc 面板 body：VStack(alignment: .center, spacing: 10) → padding(.all, 10) → frame(width: 236)（FUN_101387394 L53–83，spec-answers-0.md Q1）；内容区 236−2×10 = 216 = 4×48 + 3×8；rel49 由 300 / 8 / gap 6 改。圆角 14 ⛔ 源码未找到（保持现状）；下方扩展 / 设置 / 底栏分区是 Cat 自有内容（Arc 在别的视图），一并走 gap 10 */
+.arc-sc-top { display: flex; justify-content: center; align-items: center; gap: 8px; } /* Arc HStack(alignment: .center, spacing: 8)（scc-action-buttons.md §1，FUN_1013876b0 L49–52）；✅ 行在面板里水平居中：面板 VStack(alignment: .center)（FUN_101387394，spec-answers-0.md Q1）；rel49 已去掉原先对居中的未找到标注。面板内容区 216 = 4 个 48 + 3 个间距 8，≤3 个按钮时靠 justify-content:center 居中 */
+.arc-sc-top > .arc-sc-action { width: 48px; height: 32px; flex: none; border-radius: 6px; } /* 按钮 label frame 48×32（FUN_101372d34 L100–101）；✅ 圆角 6（SkeuPrimaryButtonStyle 背景 RoundedRectangle(cornerRadius: 6, style: .continuous)，FUN_100ad514c，spec-answers-0.md Q1）——rel49 由 8 改；continuous（超椭圆）CSS 无法实现，border-radius 6px 近似；只改顶部按钮行，基础 .arc-sc-action（Boosts 分区按钮也用）仍 8；颜色 / hover / 禁用外观 ⛔ 沿用 .arc-sc-action；29.6 实测值无源码依据，高度保持 32 */
 .arc-sc-action { all: unset; height: 36px; border-radius: 8px; display: grid; place-items: center; cursor: pointer; color: var(--arc-fg); background: color-mix(in srgb, var(--arc-fg) 7%, transparent); box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--arc-fg) 10%, transparent); }
 .arc-sc-action:hover:not(:disabled) { background: color-mix(in srgb, var(--arc-fg) 12%, transparent); }
 .arc-sc-action:disabled { opacity: 1; cursor: default; color: var(--arc-disabled-text); } /* MenuDisabledText（全局变量：浅 #ABABAB / 深 #797881，arc-colors-all.tsv:30/37，menus-spec.md:50），只改颜色 */

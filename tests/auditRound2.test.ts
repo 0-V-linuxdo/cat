@@ -13,10 +13,10 @@ test("X-05：标签菜单无 Pin to this space；收藏菜单无 Reset，组 6 �
     expect(en).toContain('"fav.removeFrom": "Remove Favorite"');
     expect(rd("src/api/ContextMenus.ts")).toMatch(/favorite: \{[^}]*closeTab: \[6, 60\], remove: \[6, 61\] \}/);
 });
-test("X-01：Archive Tab（close）在组 6，其它归档在组 7，无 pin", () => {
+test("X-01：Archive Tab（close）在组 6，其它归档在组 7；pin 只在组 6 close 之前（rel65 ②，用户 11/2 定）", () => {
     const cm = rd("src/api/ContextMenus.ts");
     expect(cm).toContain("close: [6, 60], others: [7, 70], below: [7, 71], above: [7, 72]");
-    expect(cm).not.toMatch(/tab: \{[^}]*\bpin: \[/);
+    expect(cm).toMatch(/tab: \{[^}]*\bpin: \[6, 59\], close: \[6, 60\]/);
 });
 test("K-02：space.go1–9 无默认键，命令保留", () => {
     const s = rd("src/plugins/spaces/spaceManager/index.ts");

@@ -304,12 +304,16 @@ export function arcTooltip<T extends HTMLElement>(host: T, text: string | (() =>
     /* 嵌套抑制（Cat 定案，Rea ⛔「按钮上行 tooltip 是否抑制」未追到）：指针在宿主内带 data-tip-block 的后代（右按钮 / 静音钮）上，
      * 或宿主自己带 data-tip-blocked（TabRow 在左图标区置位）时，宿主的提示计时取消、已显示的收起；离开后重新计时。保证行提示与按钮提示不会同时出现。 */
     let wasBlocked = false;
+    /* rel42 hover-rerender：整屏重绘时 keepHover 会把“新树里登记的监听”换到留在文档里的旧宿主上（文件夹行等显式 arcTooltip 的宿主），
+     * 这批闭包里的 host 是新树的游离节点 → arm() 里 !host.isConnected 直接放弃，提示再也不出。事件里以 currentTarget 为准重新绑定。 */
+    const rebind = (e: Event) => { const c = e.currentTarget as T | null; if (c && c !== host && c.isConnected) host = c; };
     const blockedBy = (e: MouseEvent): boolean => {
         if (host.hasAttribute("data-tip-blocked")) return true;
         const b = (e.target as Element | null)?.closest?.("[data-tip-block]");
         return !!b && b !== host && host.contains(b);
     };
     host.addEventListener("mousemove", (e: MouseEvent) => {
+        rebind(e);
         mx = e.clientX; my = e.clientY;
         if (blockedBy(e)) {
             wasBlocked = true;
@@ -321,6 +325,7 @@ export function arcTooltip<T extends HTMLElement>(host: T, text: string | (() =>
         follow?.(e);
     });
     host.addEventListener("mouseenter", (e: MouseEvent) => {
+        rebind(e);
         mx = e.clientX; my = e.clientY;
         wasBlocked = blockedBy(e);
         if (wasBlocked) { clearTimeout(timer); timer = undefined; return; }
@@ -484,9 +489,17 @@ function watchRoot(host: HTMLElement) {
     watched.add(r); new MutationObserver(handleMutations).observe(r, OBS_OPTS);
 }
 let installed = false;
+/** 是否在 document 上装整页观察者：只在扩展页（chrome-extension:）装。
+ * 普通网页（内容脚本 all_frames，跑在每个网页及其每个子框架里）跳过：Cat 在网页里的 UI 都在 shadow root 里，
+ * 由 arcTooltip() → watchRoot() 单独盯；网页 document 上的 title / data-tip 与 Cat 无关（yt-perf REPORT.md）。
+ * 没有 location（非浏览器环境）时保持原行为。导出供测试。 */
+export function shouldObserveDocument(loc: { protocol?: string } | undefined = typeof location === "undefined" ? undefined : location): boolean {
+    return !loc || loc.protocol === "chrome-extension:";
+}
 export function installTips() {
     if (installed || typeof document === "undefined" || typeof MutationObserver === "undefined") return;
     installed = true;
+    if (!shouldObserveDocument()) return;
     const start = () => {
         scanTips(document);
         new MutationObserver(handleMutations).observe(document.documentElement, OBS_OPTS);

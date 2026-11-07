@@ -23,6 +23,8 @@ import "./i18n";
 import style from "./style";
 import { decideName } from "./model";
 import { ruleRename } from "./rules";
+import { isOwnDownload, isSessionExport } from "./skip";
+import { gcOwnIntents, takeOwnIntent } from "@utils/ownDownload";
 
 const settings = definePluginSettings({
     useModel: { type: OptionType.BOOLEAN, description: "downloadRename.useModel", default: false },
@@ -47,8 +49,25 @@ async function titleFor(item: chrome.downloads.DownloadItem): Promise<string | u
 
 const MIGRATE = () => migrateLegacyApiKey(p => (getPluginSettings(p) as Record<string, unknown>).apiKey, p => removePluginSetting(p, "apiKey"));
 
-function onDetermining(item: chrome.downloads.DownloadItem, suggest: (s?: chrome.downloads.FilenameSuggestion) => void): boolean {
+type Suggest = (s?: chrome.downloads.FilenameSuggestion) => void;
+
+/** rel61：先查本扩展登记的下载意图（@utils/ownDownload，按 url 的 SHA-256 匹配，用完即删）。命中 → suggest(扩展指定名，含子目录)；
+ * 没命中 → 原有逻辑 decide()。Chrome 156 上 byExtensionId 为空、data: 认不出来源，所以每个下载都查一次（没有登记时不算哈希）。
+ * 一律 return true（异步 suggest）；decide() 返回 false 的分支（本扩展未登记的 blob、会话导出名）改成无参 suggest()，效果与 return false 相同。 */
+function onDetermining(item: chrome.downloads.DownloadItem, suggest: Suggest): boolean {
+    let done = false;
+    const once: Suggest = s => { if (done) return; done = true; if (s) suggest(s); else suggest(); };
+    void takeOwnIntent([item.url, item.finalUrl]).catch(() => null /* 预期：storage.session 出错 → 按未登记处理 */).then(w => {
+        if (w) { once({ filename: w.filename, conflictAction: w.conflictAction }); return; }
+        if (!decide(item, once)) once();
+    });
+    return true;
+}
+
+function decide(item: chrome.downloads.DownloadItem, suggest: Suggest): boolean {
+    if (isOwnDownload(item, chrome.runtime?.id)) return false; // 本扩展的 blob（如会话导出 <a download> 路径）但没有登记意图：不改名，item.filename 已是浏览器 / download 属性给的名字
     const base = item.filename.split(/[\\/]/).pop() ?? item.filename;
+    if (isSessionExport(base)) return false; // 会话传递导出的文件：文件名带站点域名 / 时间，保持原样，不改名、不发给模型
     const useModel = !!settings.store.useModel;
     const timeoutMs = Math.max(2, Number(settings.store.timeout) || 8) * 1000;
     let done = false;
@@ -84,15 +103,16 @@ let seen = new Set<number>();
 export default definePlugin({
     name: "DownloadRename",
     label: "plugin.downloadRename.label",
-    icon: "downloadBox",
     description: "plugin.downloadRename.desc",
     authors: [Devs.ArcSidebar],
     tags: ["library"],
+    featureTags: ["downloadRename.tag.rename", "downloadRename.tag.ai", "downloadRename.tag.revert"],
     settings,
     commands: [{ id: "downloadRename.show", label: "downloadRename.cmdShow", context: "background", run: (a?: unknown) => showInFolder((a as { id?: number } | undefined)?.id) }],
     background: {
         start() {
             void MIGRATE();
+            void gcOwnIntents().catch(() => 0); /* 预期：清理失败由闹钟 / 下次登记再清 */
             chrome.downloads.onDeterminingFilename.addListener(onDetermining);
             return [() => chrome.downloads.onDeterminingFilename.removeListener(onDetermining)];
         },

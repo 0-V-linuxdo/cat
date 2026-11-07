@@ -5,6 +5,11 @@ export const STRINGS = {
     en: {
         "plugin.capture.label": "Capture",
         "plugin.capture.desc": "Capture part of a page, an element or the full page. Full page uses page zoom (can't match Arc: needs browser engine)",
+        "capture.tag.region": "Region",
+        "capture.tag.element": "Element",
+        "capture.tag.fullPage": "Full Page",
+        "capture.tag.portrait": "Portrait",
+        "capture.tag.image": "Image",
         "capture.dragToCapture": "Hold Command and Shift to start a Capture.",
         "capture.start": "Capture…", "capture.fullPage": "Capture Full Page", "capture.portrait": "Capture in Portrait Mode", "capture.image": "Capture Image",
         "capture.hint": "Click or drag to capture a portion of this page", "capture.hintDrag": "Drag to capture a portion of this page",
@@ -18,6 +23,11 @@ export const STRINGS = {
     zh: {
         "plugin.capture.label": "截图",
         "plugin.capture.desc": "截取页面区域、元素或整页。整页用页面缩放（无法对齐：需要内核）",
+        "capture.tag.region": "区域",
+        "capture.tag.element": "元素",
+        "capture.tag.fullPage": "整页",
+        "capture.tag.portrait": "Portrait",
+        "capture.tag.image": "图片",
         "capture.dragToCapture": "按住 ⌘⇧ 拖动即可截图",
         "capture.start": "截图…", "capture.fullPage": "截取整页", "capture.portrait": "Portrait 模式截图", "capture.image": "截取图片",
         "capture.hint": "单击或拖动，截取页面的一部分", "capture.hintDrag": "拖动以截取页面的一部分",

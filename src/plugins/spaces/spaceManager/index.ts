@@ -25,6 +25,15 @@ export function dockWidth(avail: number, n: number) { const w = Math.min(34, Mat
  * 现改为：挂载后 rAF 计算一次 + ResizeObserver 监听宿主宽度；RO 回调只排一个 rAF（合并），不在回调里同步写布局；
  * 宽度为 0 时不写（等下一次 RO）；值未变不写；只在选中项变化/首次时滚动。 */
 const dockState = new WeakMap<HTMLElement, { raf: number; ro?: ResizeObserver; key?: string; act?: string }>();
+/* rel42 hover-rerender：指针停在 Space 圆点上时整屏重绘，keepHover 保留旧圆点栏并按新栏同步属性——新栏没进文档、measureDock 量不到 →
+ * 旧栏的 --dock-w / compact 被摘（实测圆点 34px → 32px 默认宽，直到下次侧栏宽度变化）。记住上次可用宽度，新栏创建时先按它写上。 */
+let lastAvail = -1;
+function applyDock(bar: HTMLElement, avail: number, n: number) {
+    const { w, compact } = dockWidth(avail, n);
+    bar.style.setProperty("--dock-w", `${w}px`);
+    bar.classList.toggle("compact", compact);
+    return `${w}|${compact}`;
+}
 function measureDock(bar: HTMLElement) {
     const st = dockState.get(bar); if (st) st.raf = 0;
     if (!bar.isConnected) { st?.ro?.disconnect(); dockState.delete(bar); return; }
@@ -32,12 +41,12 @@ function measureDock(bar: HTMLElement) {
     const host = bar.parentElement ?? bar;
     if (host.clientWidth <= 0) return;
     const others = Array.from(host.children).filter(c => c !== bar).reduce((a, c) => a + (c as HTMLElement).offsetWidth, 0);
-    const { w, compact } = dockWidth(Math.max(0, host.clientWidth - others - 24), dots.length);
+    lastAvail = Math.max(0, host.clientWidth - others - 24);
+    const { w, compact } = dockWidth(lastAvail, dots.length);
     const key = `${w}|${compact}`;
     if (st?.key !== key) {
         if (st) st.key = key;
-        bar.style.setProperty("--dock-w", `${w}px`);
-        bar.classList.toggle("compact", compact);
+        applyDock(bar, lastAvail, dots.length);
     }
     const act = bar.querySelector<HTMLElement>(".arc-space-dot.active");
     const actId = act?.dataset.space ?? ""; // 选中项的身份 = Space id（data-space，唯一）；data-tip 在进文档时已被 ArcTooltip.applyTip 消费，读回来恒为 null，不能当回退
@@ -54,6 +63,7 @@ export function scheduleDock(bar: HTMLElement) {
 }
 function layoutDock(bar: HTMLElement | null) {
     if (!bar) return;
+    if (lastAvail >= 0 && !bar.isConnected) applyDock(bar, lastAvail, bar.querySelectorAll(".arc-space-dot").length);
     scheduleDock(bar);
     const st = dockState.get(bar)!;
     if (!st.ro && typeof ResizeObserver !== "undefined") {

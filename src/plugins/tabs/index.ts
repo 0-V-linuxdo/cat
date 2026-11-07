@@ -20,7 +20,6 @@ const features = [PinnedTabs, TodayTabs, TabActions, Archive, AutoArchive, Folde
 export default definePlugin({
     name: "Tabs",
     label: "plugin.tabs.label",
-    icon: "tabs",
     description: "plugin.tabs.desc",
     authors: [Devs.ArcSidebar],
     tags: ["tabs"],

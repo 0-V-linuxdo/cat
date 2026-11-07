@@ -130,6 +130,25 @@ export const CUSTOM_VISUALS = {
     menuShadow: "0 10px 40px rgba(0,0,0,.3)",
     backdrop: "rgba(0,0,0,.35)",
 } as const;
+/** 操作菜单的整段样式（纯函数，供单测）。dark = 解析后的明暗（Appearance：auto 跟系统 / light·dark 钉住）。
+ * 不含 @media (prefers-color-scheme)：钉住时不能被系统改回去；系统切换由调用方重写 <style> 文本（不重建 DOM）。
+ * 色值全部沿用原有：MENU 两套、预览底 #151C30 / #FFF、disabled 行 #ABABAB / #797881（Rea menus-spec.md:50 MenuDisabledText）。 */
+export function menuCss(dark: boolean): string {
+    const C = dark ? MENU.dark : MENU.light;
+    const V = CUSTOM_VISUALS;
+    return `
+        .back{position:fixed;inset:0;background:${V.backdrop};}
+        .wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;gap:24px;pointer-events:none;font:13px system-ui,-apple-system;}
+        .wrap>*{pointer-events:auto;}
+        img{max-width:min(60vw,900px);max-height:80vh;border-radius:${MENU.radius}px;box-shadow:${V.previewShadow};background:${dark ? "#151C30" : "#FFF"};}
+        .menu{width:${MENU.width}px;border-radius:${MENU.radius}px;background:${C.bg};color:${C.text};padding:6px 0;box-shadow:${V.menuShadow};}
+        .row{display:flex;align-items:center;height:${MENU.rowHeight}px;padding:0 ${MENU.textPadding}px;cursor:default;margin:0 6px;border-radius:${MENU.radius - 2}px;}
+        .row.toggle{color:${C.toggle};}
+        .row[aria-disabled=true]{color:${dark ? "#797881" : "#ABABAB"};}
+        .row.sel{background:${C.selected};color:${C.selectedText};}
+        .div{height:1px;margin:4px 0;background:currentColor;opacity:.1;}`;
+}
+
 export function portraitLayout(w: number, h: number): { canvasW: number; canvasH: number; pad: number } {
     const pad = Math.round(Math.max(w, h) * PORTRAIT.padRatio);
     return { canvasW: w + pad * 2, canvasH: h + pad * 2, pad };

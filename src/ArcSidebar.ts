@@ -3,6 +3,7 @@ import { registerUrlTransform } from "@api/UrlTransforms";
 import { installFocusPolicy } from "@api/FocusPolicy";
 import { installErrorLog } from "@api/ErrorLog";
 import { installToneProbe } from "@api/ToneProbe";
+import { mirrorAppearanceCache } from "@api/Appearance";
 import { arcConfirm, arcPrompt } from "@components/Dialog";
 import { commands, runCommand } from "@api/Commands";
 import { setContext } from "@api/context";
@@ -29,6 +30,7 @@ export async function bootstrap(ctx: ExtContext) {
         registerPlugin(p);
     }
     await initSettings();
+    if (ctx !== "background" && ctx !== "content") mirrorAppearanceCache(); // [system-color-scheme/3b] 设置页首帧缓存（localStorage，扩展页面同源）
     /* 界面语言：设置读到后才确定（自动 / 中文 / English）；改了以后扩展页面重新加载，后台与内容脚本即时切换 */
     const langOf = () => (Settings.plugins.PluginSettings as { language?: "auto" | "zh" | "en" } | undefined)?.language;
     let lang = langOf();
