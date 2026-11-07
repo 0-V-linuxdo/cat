@@ -20,7 +20,11 @@ import { subscribe } from "./Events";
 import type { Cleanup } from "@utils/types";
 import { debounce } from "@utils/misc";
 import { commitKeepingHover, hoveredKeyed, recordListeners } from "@api/keepHover";
+import { reuseFavicons } from "@api/iconReuse";
 import { flog } from "@api/FocusLog";
+import { currentWindow } from "@api/HostMode";
+import { unlessParked } from "@api/ParkGate";
+import { parkClosed } from "@api/ParkLife";
 
 let root: HTMLElement;
 let cleanups: Array<() => void> = [];
@@ -28,7 +32,7 @@ let overlayCleanup: Cleanup;
 
 export function mountShell(el: HTMLElement) {
     root = el;
-    const render = debounce(renderAll, 16);
+    const render = debounce(() => unlessParked("shell.render", renderAll), 16); // 补丁 inpage-parked-idle：停放的 iframe 不整屏重绘，只记脏位，切回补一次（renderAll 内部的 250 ms 重试照旧）
     subscribe("refresh", render);
     subscribe("pluginToggle", render);
     for (const n of SLOT_ORDER) slot(n).store.subscribe(render);
@@ -77,7 +81,8 @@ export function mountShell(el: HTMLElement) {
     if (!getPopupMode()) {
         const onAct = () => { if (overlayEl || document.querySelector(".arc-menu:not([hidden])")) dismiss("tab-activated"); };
         chrome.tabs.onActivated.addListener(onAct);
-        void safe(chrome.windows.getCurrent().then(me => chrome.windows.onFocusChanged.addListener(w => {
+        void safe(currentWindow().then(me => chrome.windows.onFocusChanged.addListener(w => {
+            if (parkClosed()) return; // 补丁 inpage-parked-timers-stop-b：停放（且隐藏）的 iframe 不处理窗口焦点变化：flog 每次 = setTimeout + storage.local.get + set（读改写，N 个 iframe 同写一个 key），而它没有可见的菜单 / 浮层可关（隐藏那一拍已 dismiss("hidden")）
             flog(where, `onFocusChanged ${w} (mine ${me.id})`);
             if (w !== me.id && (overlayEl || document.querySelector(".arc-menu:not([hidden])"))) dismiss("other-window");
         })), "windows.getCurrent");
@@ -89,7 +94,7 @@ export function mountShell(el: HTMLElement) {
     document.addEventListener("visibilitychange", () => { flog(where, `visibility:${document.visibilityState}`); if (document.hidden) dismiss("hidden"); });
     if (getPopupMode()) {
         // 弹窗：轮询“最后聚焦的窗口”——失焦事件丢了也能关
-        void safe(chrome.windows.getCurrent().then(me => {
+        void safe(currentWindow().then(me => {
             const iv = setInterval(async () => {
                 if (Date.now() - born < 700) return;
                 const lf = await safe(chrome.windows.getLastFocused(), "windows.getLastFocused", null);
@@ -138,6 +143,7 @@ function renderAll() {
     }
     });
     if (!commitKeepingHover(root, frag, hovered)) root.replaceChildren(...frag);
+    reuseFavicons(root); // favicon-jitter：把上一次渲染里已加载好的 favicon 节点按行 key 换回来，重绘不重新加载 / 不闪
     if (scroll) (scroll as HTMLElement).scrollTop = scrollTop;
 }
 

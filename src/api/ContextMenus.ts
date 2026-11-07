@@ -22,8 +22,8 @@ export interface MenuTarget {
 export const MENU_LAYOUT: Partial<Record<MenuLocation, Record<string, [number, number]>>> = {
     /* tab：顺序 ✅ menus-spec.md §3.2（审计 52193 X-01）：Copy Link | Change Icon / Rename Tab / Mute（组 3，与组 4 Customize Page / Edit Pinned Page 之间无分隔线）
      * | Open in Split View / Duplicate / Move to（组 5，tab-tooltip-internal-moveto.md §2）| Close Tab(s)（组 6，FUN_102ecb26c）+ Archive Other/Below/Above（组 7；L1191 之后到 L1647 无分隔线，同组）。
-     * route/separate 为扩展自有 ⛔。Share 扩展做不到不加；Customize Page 无对应 ⛔。Move to 非无痕窗口才有（「菜单定案」§2）。Pin / Add to Favorites 不在右键菜单（「菜单定案」§1 字符串 0 命中）。Archive Tab(s)/Remove Pin(s)（FUN_102ecb2ec）扩展无对应项 ⛔。 */
-    tab: { copy: [1, 10], md: [1, 11], changeIcon: [2, 19], rename: [2, 20], mute: [2, 21], split: [3, 30], dup: [3, 31], moveTo: [3, 32], route: [4, 41], separate: [4, 42], close: [6, 60], others: [7, 70], below: [7, 71], above: [7, 72] },
+     * route/separate 为扩展自有 ⛔。Share 扩展做不到不加；Customize Page 无对应 ⛔。Move to 非无痕窗口才有（「菜单定案」§2）。Add to Favorites 不在右键菜单（「菜单定案」§1 字符串 0 命中）；Pin 同样 0 命中，但用户 11/2 定加「Pin Tab」（rel65 ②，Arc 主菜单栏文案），位置 ⛔ 源码未找到 → 组 6 Archive Tab 之前 [6, 59]。Archive Tab(s)/Remove Pin(s)（FUN_102ecb2ec）扩展无对应项 ⛔。 */
+    tab: { copy: [1, 10], md: [1, 11], changeIcon: [2, 19], rename: [2, 20], mute: [2, 21], split: [3, 30], dup: [3, 31], moveTo: [3, 32], route: [4, 41], separate: [4, 42], pin: [6, 59], close: [6, 60], others: [7, 70], below: [7, 71], above: [7, 72] },
     /* pinned：同 tab 菜单的前几组（审计 52193 P-04）：Copy Link | Change Icon / Rename Tab / Mute / Edit Pinned Page ▸（① Replace Pinned URL with Current ② Edit…；urlbar-menus-followup.md L326–415 第 8、10 项，同一组、无分隔线，Edit Pinned Page 在 Mute 之后）。
      * mute 槽位与 tab 菜单同值（media 插件 muteMenuItem 注册到 pinned / favorite）。
      * 组 4（Arc 第 11–13 项，L1074 分隔线之后）：Open in Split View（无条件）/ Duplicate（只要求 !anyLive，无数量限制）/ Move to，值同 tab 菜单（splitView splitMenuItem、tabActions dupMenuItem 注册到 pinned）。

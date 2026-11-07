@@ -3,6 +3,7 @@
  * 待确认项的选择：新标签默认显示在顶部（可在设置中改为底部）。
  */
 import { safe } from "@api/ErrorLog";
+import { navigateAfterNative } from "@api/HostMode";
 import { tr } from "@api/i18n";
 import { todayHeaderState } from "@api/Slots";
 import { onTabIdRemap, remapRecord } from "@api/TabIdRemap";
@@ -36,7 +37,8 @@ export function dropExternal(e: DragEvent): boolean {
     const text = dt.getData("text/plain").trim();
     if (!link && !text) return false;
     e.preventDefault();
-    if (link || /^https?:\/\/\S+$/.test(text)) void safe(chrome.tabs.create({ url: link || text, active: true }), "tabs.create");
+    // patch 07：drop 不是激活触发事件 → needActive：本文档此刻没有瞬时激活（navigator.userActivation.isActive）就不发（Chrome 会拒），降级为直接新建，由按钮 / 角标 / 快捷键兜底（⚠ 降级路径，DESIGN 3.7）
+    if (link || /^https?:\/\/\S+$/.test(text)) { const url = link || text; void safe(Promise.resolve(navigateAfterNative(url, "create", undefined, () => chrome.tabs.create({ url, active: true }), { needActive: true })), "tabs.create"); }
     else void safe(chrome.tabs.create({ active: true }).then(t => chrome.search.query({ text, tabId: t.id })), "tabs.create");
     return true;
 }
@@ -100,7 +102,10 @@ export async function clearToday() {
     if (ids.length) await chrome.tabs.remove(ids);
 }
 
-const newTab = () => (commands.get("commandBar.newTab") ? runCommand("commandBar.newTab") : chrome.tabs.create({}));
+const newTab = () => {
+    if (commands.get("commandBar.newTab")) return runCommand("commandBar.newTab"); // 命令栏：最终目的地在命令栏里选定时才切（commandBar 的调用点）
+    return Promise.resolve(navigateAfterNative(undefined, "create", undefined, () => chrome.tabs.create({}))); // 无命令栏：新建标签 = chrome://newtab（受限页），先切原生（等 ack 再建，patch 07）
+};
 
 /** 侧边栏空白处：双击 = 新标签；拖进网页链接 / 文字 = 打开 / 搜索 */
 function shellGestures() {
@@ -187,12 +192,13 @@ export default definePlugin({
                         title: titleStore.get().byTab[t.id!] || t.title || t.url || "", // 标题链：自定义名 → 页面标题 → 网址（tab-rename.md 结论 2；savedTitle 只属固定项）
                         onRename: v => void titleStore.update(x => { if (v) x.byTab[t.id!] = v; else delete x.byTab[t.id!]; }), url: t.url, favIconUrl: t.favIconUrl, active: t.active,
                         audible: t.audible, muted: t.mutedInfo?.muted,
-                        tabId: t.id,
+                        tabId: t.id, tabUrl: t.url || t.pendingUrl || "", // 补丁 t903u-tab-switch v2
                         onClick: e => {
                             // ⌥ 单击 = 与当前标签组成分屏
                             const cur = getTabs().find(x => x.active);
-                            if (e.altKey && cur?.id != null && cur.id !== t.id && isPluginEnabled("SplitView")) { void call("split:merge", cur.id, t.id, "right"); return; }
-                            void safe(chrome.tabs.update(t.id!, { active: true }), "tabs.update");
+                            if (e.altKey && cur?.id != null && cur.id !== t.id && isPluginEnabled("SplitView")) { void navigateAfterNative(chrome.runtime.getURL("split.html"), "navigate", cur.id, () => call("split:merge", cur.id, t.id, "right")); return; }
+                            // 页内侧栏：点到受限页标签 → 先切原生（等 ack，最多 500 ms）再激活（patch 07）
+                            void safe(Promise.resolve(navigateAfterNative(t.url, "activate", t.id, () => chrome.tabs.update(t.id!, { active: true }))), "tabs.update");
                         },
                         onClose: () => void safe(chrome.tabs.remove(t.id!), "tabs.remove"),
                         onContextMenu: e => showContextMenu(e, "tab", { tabId: t.id, url: t.url, title: t.title, below: tabs.slice(i + 1).map(x => x.id!), above: tabs.slice(0, i).map(x => x.id!) }),
@@ -202,7 +208,9 @@ export default definePlugin({
                             const keys = expandDragData(data);
                             if (e.altKey && keys.length === 1 && keys[0].startsWith("tab:") && isPluginEnabled("SplitView")) {
                                 const r = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
-                                void call("split:merge", t.id, Number(keys[0].slice(4)), r && e.clientX < r.left + r.width / 2 ? "left" : "right");
+                                // ⚠ drop 事件本身不是激活触发事件，靠拖拽开始时的 pointerdown 激活（约 5 s 内）：needActive = 此刻没有瞬时激活就降级（不发消息，照常合并，兜底 = 按钮 / 角标 / 快捷键）（patch 07）
+                                const side = r && e.clientX < r.left + r.width / 2 ? "left" : "right", from = Number(keys[0].slice(4));
+                                void navigateAfterNative(chrome.runtime.getURL("split.html"), "navigate", t.id, () => call("split:merge", t.id, from, side), { needActive: true });
                                 return;
                             }
                             void dropToToday(data, t.id, before);

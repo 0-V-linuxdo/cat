@@ -36,7 +36,10 @@ test("悬停 / 焦点类事件处理里不打开任何面板", () => {
 
 test("keepHover 重绘只同步属性 / 换监听，不派发 click、不调用处理函数", () => {
     const k = r("src/api/keepHover.ts");
-    expect(k).not.toMatch(/\.click\(\)|dispatchEvent|\.fn\.call|handleEvent\(/);
+    // 唯一的 dispatchEvent 是自定义 REHOVER（pinned-icon-hover：让悬停行重判图标区，不是 click / 不调处理函数）
+    expect(k.match(/dispatchEvent/g)?.length).toBe(1);
+    expect(k).toContain("old.dispatchEvent(new Event(REHOVER))");
+    expect(k.replace("old.dispatchEvent(new Event(REHOVER))", "")).not.toMatch(/\.click\(\)|dispatchEvent|\.fn\.call|handleEvent\(/);
     // 换监听只做 remove + add
     expect(k).toMatch(/old\.removeEventListener\(r\.type, r\.fn, r\.opts\)/);
     expect(k).toMatch(/old\.addEventListener\(r\.type, r\.fn, r\.opts\)/);

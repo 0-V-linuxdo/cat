@@ -28,7 +28,9 @@ describe("urlbar-menus-followup", () => {
         const items = pin.slice(pin.indexOf("        pinned: ["), pin.indexOf("    background:"));
         for (const id of ["reset", "unpin", "delete"]) expect(items).not.toContain(`id: "${id}"`);
         expect(items).not.toContain('id: "closeTab"');
-        expect(items).toMatch(/id: "removePin", label: "pinned\.removePin", run: t => unpin\(t\.itemId!, true\)/);
+        // rel65 ①：Remove Pin 不再关标签（removePinsKeepOpen：标签回到 Today 顶部）
+        expect(items).toMatch(/id: "removePin", label: "pinned\.removePin", run: t => removePinsKeepOpen\(\[t\.itemId!\]\)/);
+        expect(items).not.toContain("unpin(t.itemId!, true)");
         const l = layout("pinned");
         expect(l.closeTab).toBeUndefined(); expect(l.removePin).toEqual([6, 61]);
         expect(Object.keys(l)).not.toContain("reset");

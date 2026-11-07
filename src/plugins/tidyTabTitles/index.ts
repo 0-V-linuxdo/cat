@@ -29,10 +29,10 @@ const MIGRATE = () => migrateLegacyApiKey(p => (getPluginSettings(p) as Record<s
 export default definePlugin({
     name: "TidyTabTitles",
     label: "plugin.tidyTabTitles.label",
-    icon: "sparkles",
     description: "plugin.tidyTabTitles.desc",
     authors: [Devs.ArcSidebar],
     tags: ["tabs"],
+    featureTags: ["tidyTabTitles.tag.shorten", "tidyTabTitles.tag.reset"],
     settings,
     panel: {
         start() {

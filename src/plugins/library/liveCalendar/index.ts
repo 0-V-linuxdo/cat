@@ -5,6 +5,7 @@
 import "@components/ArcTooltip";
 import { safe } from "@api/ErrorLog";
 import { tr } from "@api/i18n";
+import { parkedInterval } from "@api/ParkLife";
 import { h } from "@api/dom";
 import { addSection, refresh } from "@api/Slots";
 import { definePluginSettings } from "@api/Settings";
@@ -40,9 +41,9 @@ export default definePlugin({
     panel: {
         start() {
             void load();
-            const reload = setInterval(() => void load(), 15 * 60000);
-            const tick = setInterval(refresh, 30000);
-            return [() => { clearInterval(reload); clearInterval(tick); }, addSection("footer", "LiveCalendar", {
+            const reload = parkedInterval(() => void load(), 15 * 60000); // 补丁 inpage-parked-timers-stop：停放时真停表（不再调度），切回若已到点补一次再重启（第 17 层只是到点时记脏位）
+            const tick = parkedInterval(refresh, 30000);
+            return [() => { reload(); tick(); }, addSection("footer", "LiveCalendar", {
                 order: 1,
                 render(el) {
                     const e = nextEvent(events);

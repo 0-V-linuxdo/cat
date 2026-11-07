@@ -88,10 +88,11 @@ export async function exportIntoFolder(srcId: string, dstId: string) {
     const d = spacesStore.get();
     const pins = pinnedStore.get().bySpace[srcId] ?? [];
     const claimed = new Set<number | undefined>([...walk(pins)].map(n => n.tabId).filter(x => x != null));
-    const tabs = (await chrome.tabs.query({})).filter(t => d.tabSpace[t.id!] === srcId && !claimed.has(t.id) && !t.pinned && /^(https?|file|chrome):/.test(t.url ?? t.pendingUrl ?? ""));
+    // rel48 ②：首次导航未提交时 url 是空串（不是 undefined）→ 用 || 回退 pendingUrl（同 pinnedTabs/model.ts tabUrl）
+    const tabs = (await chrome.tabs.query({})).filter(t => d.tabSpace[t.id!] === srcId && !claimed.has(t.id) && !t.pinned && /^(https?|file|chrome):/.test(t.url || t.pendingUrl || ""));
     const folder: PinNode = {
         id: uid(), kind: "folder", title: `${iconText(src.icon) ? `${iconText(src.icon)} ` : ""}${src.name}`, collapsed: false,
-        children: [...structuredClone(pins), ...tabs.map(t => ({ id: uid(), kind: "tab" as const, url: t.url ?? t.pendingUrl, title: t.title, tabId: t.id }))],
+        children: [...structuredClone(pins), ...tabs.map(t => ({ id: uid(), kind: "tab" as const, url: t.url || t.pendingUrl, title: t.title, tabId: t.id }))],
     };
     await pinnedStore.update(x => { (x.bySpace[dstId] ??= []).push(folder); delete x.bySpace[srcId]; delete x.collapsed[srcId]; });
     await call("spaces:merge", srcId, dstId, getWindowId());

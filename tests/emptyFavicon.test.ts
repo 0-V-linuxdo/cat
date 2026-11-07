@@ -28,9 +28,10 @@ test("emptyFavicon(size) 生成 14×14 viewBox 的 svg，默认 14，可改尺�
     } finally { g.document = had; }
 });
 
-test("TabRow：没有图标用 emptyFavicon()，有图标的 <img> 套 withEmptyFallback（出错 / 默认地球兜底）", () => {
+test("TabRow：没有图标用 emptyFavicon()，有图标走 favNode（= <img> 套 withEmptyFallback：出错 / 默认地球兜底；已知空图直接占位，favicon-jitter）", () => {
     const src = readFileSync(resolve(ROOT, "src/components/TabRow.ts"), "utf8");
-    expect(src).toContain(`import { emptyFavicon, withEmptyFallback } from "@components/EmptyFavicon";`);
-    expect(src).toMatch(/icon \? withEmptyFallback\(h\("img", \{ class: `arc-fav[^\n]* as HTMLImageElement\) : iconBtn\(emptyFavicon\(\)\),/);
+    expect(src).toContain(`import { emptyFavicon, favNode, withEmptyFallback } from "@components/EmptyFavicon";`);
+    expect(src).toMatch(/icon \? favNode\(icon, `arc-fav[^\n]*`\) : iconBtn\(emptyFavicon\(\)\),/);
+    expect(readFileSync(resolve(ROOT, "src/components/EmptyFavicon.ts"), "utf8")).toContain("return withEmptyFallback(img, size);");
     expect(src).not.toContain(`: h("span", { class: "arc-fav" }),`);
 });

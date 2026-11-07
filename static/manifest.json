@@ -41,6 +41,17 @@
       "all_frames": true
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sidepanel.html"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ],
   "permissions": [
     "sidePanel",
     "offscreen",
@@ -89,6 +100,7 @@
   },
   "default_locale": "en",
   "optional_permissions": [
-    "userScripts"
+    "userScripts",
+    "cookies"
   ]
 }

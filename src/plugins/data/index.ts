@@ -12,7 +12,6 @@ const features = [Backup];
 export default definePlugin({
     name: "Data",
     label: "plugin.data.label",
-    icon: "data",
     description: "plugin.data.desc",
     authors: [Devs.ArcSidebar],
     tags: ["data"],

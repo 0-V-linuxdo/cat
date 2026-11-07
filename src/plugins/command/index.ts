@@ -15,7 +15,6 @@ const features = [CommandBar, Shortcuts, PlusMenu, Navigation];
 export default definePlugin({
     name: "Command",
     label: "plugin.command.label",
-    icon: "search", // I-01 / S-04：不用手绘 command（ionicons search-outline）
     description: "plugin.command.desc",
     authors: [Devs.ArcSidebar],
     tags: ["command"],

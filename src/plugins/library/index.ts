@@ -14,7 +14,6 @@ const features = [LibraryView, Media, LiveCalendar];
 export default definePlugin({
     name: "Library",
     label: "plugin.library.label",
-    icon: "archive",
     description: "plugin.library.desc",
     authors: [Devs.ArcSidebar],
     tags: ["library"],

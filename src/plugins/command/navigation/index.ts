@@ -5,6 +5,7 @@
 import { detectBrowserScheme, displayUrl, isBlankPage, loadCachedBrowserScheme } from "@api/displayUrl";
 import "@components/ArcTooltip";
 import { safe } from "@api/ErrorLog";
+import { navigateAfterNative } from "@api/HostMode";
 import { tr } from "@api/i18n";
 import { urlbarIndicators, refresh } from "@api/Slots";
 
@@ -50,7 +51,7 @@ function siteControls(e: MouseEvent, t: chrome.tabs.Tab) {
     let origin = ""; try { origin = new URL(t.url ?? "").origin; } catch { /* 非网页 */ }
     openMenu({ x: e.clientX, y: e.clientY }, [
         { label: tr("tab.copyLink"), test: "site:copy", run: () => void copyUrlWithToast(t.url ?? "") },
-        ...(origin.startsWith("http") ? [{ label: tr("nav.siteSettings"), test: "site:settings", run: () => void safe(chrome.tabs.create({ url: `chrome://settings/content/siteDetails?site=${encodeURIComponent(origin)}` }), "tabs.create") }] : []),
+        ...(origin.startsWith("http") ? [{ label: tr("nav.siteSettings"), test: "site:settings", run: () => { const url = `chrome://settings/content/siteDetails?site=${encodeURIComponent(origin)}`; void safe(Promise.resolve(navigateAfterNative(url, "create", undefined, () => chrome.tabs.create({ url }))), "tabs.create"); } }] : []),
         { label: tr("nav.hardReload"), test: "site:hardReload", run: () => void safe(chrome.tabs.reload(t.id!, { bypassCache: true }), "tabs.reload") },
         { label: tr("media.pip"), test: "site:pip", run: () => void safe(chrome.scripting.executeScript({ target: { tabId: t.id! }, func: () => { const v = Array.from(document.querySelectorAll("video")).toSorted((a, b) => b.clientWidth - a.clientWidth)[0]; if (v) void v.requestPictureInPicture().catch(() => { /* 页面上下文，无法用 safe */ }); } }), "scripting.executeScript") },
         { label: t.mutedInfo?.muted ? tr("tab.unmute") : tr("tab.mute"), test: "site:mute", run: () => void safe(chrome.tabs.update(t.id!, { muted: !t.mutedInfo?.muted }), "tabs.update") },
@@ -70,7 +71,7 @@ export default definePlugin({
         { id: "nav.back", label: "nav.back", keywords: ["back"], context: "panel", run: () => { const t = activeTab(); if (t?.id != null) void chrome.tabs.goBack(t.id).catch(() => { /* 无历史时 Cannot go back，属正常 */ }); } },
         { id: "nav.forward", label: "nav.forward", keywords: ["forward"], context: "panel", run: () => { const t = activeTab(); if (t?.id != null) void chrome.tabs.goForward(t.id).catch(() => { /* 无历史时 Cannot go forward，属正常 */ }); } },
         // ⌘Y / Ctrl+H 默认键 Arc 没有（审计 52193 多出项 #7）：默认不绑键，命令保留
-        { id: "nav.history", label: "nav.history", keywords: ["history"], context: "panel", run: () => chrome.tabs.create({ url: "chrome://history", windowId: getWindowId() }) },
+        { id: "nav.history", label: "nav.history", keywords: ["history"], context: "panel", run: () => Promise.resolve(navigateAfterNative("chrome://history", "create", undefined, () => chrome.tabs.create({ url: "chrome://history", windowId: getWindowId() }))) }, // patch 07：先切原生，等 ack 再建
         { id: "nav.reload", label: "nav.reload", keywords: ["reload", "refresh"], context: "panel", run: () => { const t = activeTab(); if (t?.id != null) void safe(chrome.tabs.reload(t.id), "tabs.reload"); } },
     ],
     content: {

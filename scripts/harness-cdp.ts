@@ -5,7 +5,8 @@
  *   4) 跑 selftest.html 自测页，
  *   全程收集所有扩展上下文的异常 / rejection / console.error，并读 chrome://extensions 错误列表，任何一条都失败。
  * 用法：bun run build:selftest && bun run scripts/harness-cdp.ts   （环境变量：DIST、HEADLESS=1、SELFTEST=0、CHROME） */
-import { Harness, sleep, withTimeout, StepTimeout } from "./lib/cdp-harness";
+import { Harness, sleep, withTimeout, StepTimeout, mono, clock } from "./lib/cdp-harness";
+import { describeEvent, effectiveElapsed } from "../src/selftest/clockWatch";
 import { LOCATE_SRC } from "../src/selftest/locate";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -15,11 +16,13 @@ if (!DIST) {
     const rel = `tmp/harness-dist-${process.pid}-${Date.now()}`;
     const b = Bun.spawnSync(["bun", "run", "build.ts", "--selftest"], { cwd: ROOT, env: { ...process.env, ARC_OUT: rel }, stdout: "ignore", stderr: "pipe" });
     if (b.exitCode !== 0) { console.log("FAIL 构建私有 dist 失败：", b.stderr.toString().slice(-1500)); process.exit(1); }
+    clock.resync(); // 同步构建阻塞了事件循环，不算“冻结”
     DIST = ownDist = ROOT + rel; console.log("私有 dist：", DIST);
 }
 const SHOTS = process.env.SHOT_DIR ?? "/workspace/arc-acceptance/harness";
 (await import("fs")).mkdirSync(SHOTS, { recursive: true });
-async function shot(tag: string) { try { const r = await h.send("Page.captureScreenshot", { format: "png" }, S()); const f = `${SHOTS}/${tag}-${Date.now()}.png`; (await import("fs")).writeFileSync(f, Buffer.from(r.data, "base64")); return f; } catch { return "(截图失败)"; } }
+/** rel45：截图有硬上限（默认 8s）：Page.captureScreenshot 在窗口被遮挡 / 无绘制时可能不返回，不能把断言信息拖死在这里；超时 → "(截图失败)" */
+async function shot(tag: string, ms = 8000) { try { const r = await withTimeout(`截图 ${tag}`, ms, h.send("Page.captureScreenshot", { format: "png" }, S(), ms)); const f = `${SHOTS}/${tag}-${Date.now()}.png`; (await import("fs")).writeFileSync(f, Buffer.from(r.data, "base64")); return f; } catch (e) { return `(截图失败：${String((e as Error).message).slice(0, 80)})`; } }
 const h = new Harness();
 type Row = { step: string; ok: boolean; detail: string };
 const rows: Row[] = [];
@@ -32,11 +35,40 @@ const expectedUrl = (e: any) => /ERR_FILE_NOT_FOUND/.test(String(e.text)) && /\/
 const expected = (e: any) => EXPECTED.some(r => r.test(String(e.text ?? e.msg))) || expectedUrl(e);
 const allErrs: any[] = [];
 
-/** 一个步骤：超时 + 步骤名；结束时检查新错误（CDP 各上下文 + chrome://extensions）和侧栏是否还在 */
-async function step(name: string, ms: number, fn: () => Promise<unknown>, opts: { needPanel?: boolean } = { needPanel: true }) {
+/* rel45：卡死 / 超时分支的现场信息（harness 侧阶段 + 自测页 __stage / visibilityState + wall 与单调时钟差），出在失败详情里，下次红能看到真因 */
+let lastStage = ""; let stageT0 = 0;
+const setStage = (s: string) => { lastStage = `${s} @${Math.round(mono() - stageT0)}ms`; };
+let stPage: string | undefined; // 自测页（非隔离）的 CDP session，卡死 / 超时诊断用
+const clockInfo = () => { const c = clock.summary(); return `wall−mono 漂移 ${c.skewMs}ms，时钟事件 ${c.events} 次${c.last.length ? "：" + c.last.join("；") : ""}`; };
+async function timeoutDiag(): Promise<string> {
+    const parts = [`harness 阶段：${lastStage || "（无）"}`, `harness 时钟：${clockInfo()}`];
+    const vis = panel ? await h.evalIn(panel.sessionId, "document.visibilityState", { ms: 3000 }).catch(() => "（侧栏无响应）") : "（无侧栏）";
+    parts.push(`侧栏 visibilityState=${vis}`);
+    if (stPage) parts.push(`自测页：${await h.evalIn(stPage, "JSON.stringify(globalThis.__clockDiag?.() ?? null)", { ms: 3000 }).catch(() => "（自测页无响应）")}`);
+    return parts.join(" ‖ ");
+}
+const jumpRetried: string[] = [];
+/** 一个步骤：超时 + 步骤名；结束时检查新错误（CDP 各上下文 + chrome://extensions）和侧栏是否还在。
+ *  rel45：opts.jumpRetry = 超时且这一步期间检测到时钟跳变 / 冻结时的重试次数上限（默认 0；只给可重入的步骤开）。真超时（期间没有时钟事件，或重试用尽）照常失败，断言不放松。 */
+async function step(name: string, ms: number, fn: () => Promise<unknown>, opts: { needPanel?: boolean; jumpRetry?: number } = { needPanel: true }) {
     let fail = "";
-    try { const r = await withTimeout(name, ms, fn()); if (r === false) fail = "没点到（元素不存在 / 不可见）"; }
-    catch (e) { fail = e instanceof StepTimeout ? e.message : `异常：${(e as Error).message}`; }
+    const maxRetry = opts.jumpRetry ?? 0;
+    for (let attempt = 0; ; attempt++) {
+        const mark = clock.mark(); stageT0 = mono(); lastStage = "";
+        fail = "";
+        try { const r = await withTimeout(name, ms, fn()); if (r === false) fail = "没点到（元素不存在 / 不可见）"; }
+        catch (e) { fail = e instanceof StepTimeout ? e.message : `异常：${(e as Error).message}`; if (e instanceof StepTimeout) fail += ` ‖ ${await timeoutDiag()}`; }
+        clock.sample();
+        const evs = clock.since(mark);
+        if (fail.includes("步骤超时（") && evs.length && attempt < maxRetry) {
+            console.log(`[时钟跳变] 「${name}」超时，且这一步期间检测到 ${evs.length} 次时钟跳变 / 冻结（${evs.slice(-2).map(describeEvent).join("；")}）→ 重试该步（${attempt + 1}/${maxRetry}；断言不变，重试仍超时则判失败）。首次超时：${fail.slice(0, 300)}`);
+            jumpRetried.push(`${name}（第 ${attempt + 1} 次重试）`);
+            await sleep(1500); // 让上一轮残留的 CDP 调用 / 页面动作先收敛
+            continue;
+        }
+        if (attempt > 0 && !fail) console.log(`[时钟跳变] 「${name}」重试后通过（重试 ${attempt} 次）`);
+        break;
+    }
     await sleep(500);
     const cdp = h.errors.slice(seenCdp).filter(e => !expected(e)); seenCdp = h.errors.length;
     const ext = await h.extensionErrors().catch(() => []); const extNew = ext.slice(seenExt).filter(e => !expected(e)); seenExt = ext.length;
@@ -90,7 +122,7 @@ const closeAll = async () => { await escape(); await escape(); };
 const LIVE_MENU = `[data-test="plus-menu"]:not(.closing):not([hidden])`;
 const menuOpen = () => ev(`(() => { const m = document.querySelector(${JSON.stringify(LIVE_MENU)}); return !!m && m.checkVisibility(); })()`);
 const noClosingMenu = () => ev(`!document.querySelector('[data-test="plus-menu"].closing')`);
-async function pollUntil(fn: () => Promise<unknown>, ms: number) { const end = Date.now() + ms; for (;;) { if (await fn().catch(() => false)) return true; if (Date.now() > end) return false; await sleep(100); } }
+async function pollUntil(fn: () => Promise<unknown>, ms: number) { const end = mono() + ms; for (;;) { if (await fn().catch(() => false)) return true; if (mono() > end) return false; await sleep(100); } }
 /** 打开 ＋ 菜单并等到指定项在“活”菜单里可见（轮询，不靠固定等待） */
 async function openPlusFor(item: string) {
     await pollUntil(noClosingMenu, 3000);
@@ -143,8 +175,8 @@ try {
         await h.clearExtensionErrors(); seenExt = (await h.extensionErrors()).length;
     }
 
-    /* PHASES=core,generic,clicks（默认全部）：可分段跑，每段 < ~100s；POPOVERS=正则 只跑匹配的通用浮层 */
-    const PH = new Set((process.env.PHASES ?? "core,generic,theme,wheelx,clicks").split(","));
+    /* rel42：默认含 hoverrerender（依赖 5 个 hover-rerender-* 产品补丁；没打时会红 23 步）。rel47：默认再含 pinhover（固定标签图标区真鼠标 hover，含「/」斜杠 opacity 断言）。pinhover = 11 步 ≈ 1–1.5 分钟，与 hoverrerender 同在 SIDEPANEL!=="0" 内（SIDEPANEL=0 / 隔离子进程 PHASES=none 都不跑），各自快照并还原 data:pinned；执行顺序按代码顺序（… theme → pinhover → hoverrerender → wheelx → clicks），与 PHASES 书写顺序无关。PHASES=core,generic,clicks（默认全部）：可分段跑，每段 < ~100s；POPOVERS=正则 只跑匹配的通用浮层 */
+    const PH = new Set((process.env.PHASES ?? "core,generic,theme,wheelx,clicks,hoverrerender,pinhover").split(","));
     if (PH.has("core")) {
     // ===== 第一项：＋ =====
     await step("【首项】真实点击 ＋ → 菜单打开、侧栏仍在、零错误", 10_000, async () => {
@@ -932,6 +964,357 @@ try {
         });
     }
     }
+    if (PH.has("pinhover")) {
+    // ===== 固定标签图标区 hover（pinned-title-hover.md §1.5 / §5.2）：真实侧栏 + 真实鼠标（Input.dispatchMouseEvent），未偏离 / 已偏离各量一遍 =====
+    {
+        const O = opener!.sessionId;
+        const saved = await h.evalIn(O, `chrome.storage.local.get("data:pinned")`).catch(() => ({}));
+        const PIH_OUT = process.env.PIH_OUT ?? SHOTS;
+        const probe = (sel: string) => `(() => {
+            const row = document.querySelector(${JSON.stringify(sel)}); if (!row) return null;
+            const q = s => row.querySelector(s), cs = e => e ? getComputedStyle(e) : null, R = e => { const r = e?.getBoundingClientRect(); return r ? [+r.left.toFixed(1), +r.top.toFixed(1), +r.width.toFixed(1), +r.height.toFixed(1)] : null; };
+            const title = q(".arc-tab-title"), sub = q(".arc-tab-sub"), close = q(".arc-tab-close"), slash = q(".arc-drift"), fav = q(".arc-fav");
+            const m = new DOMMatrixReadOnly(cs(title)?.transform === "none" ? undefined : cs(title)?.transform);
+            return { hover: row.matches(":hover"), hz: row.getAttribute("data-hz"), tipBlocked: row.hasAttribute("data-tip-blocked"),
+                titleDy: +m.m42.toFixed(2), titleRect: R(title), rowRect: R(row), favRect: R(fav), slashRect: R(slash),
+                sub: sub ? { text: sub.textContent, opacity: cs(sub).opacity, rect: R(sub) } : null,
+                close: close ? { opacity: cs(close).opacity, vis: cs(close).visibility, pe: cs(close).pointerEvents } : null,
+                slash: slash ? { opacity: cs(slash).opacity, display: cs(slash).display } : null,
+                tips: [...document.querySelectorAll(".arc-tooltip:not(.out)")].map(t => t.textContent?.trim()),
+                attrs: { title: row.getAttribute("title"), anyTitle: !!row.querySelector("[title]"), dataTip: row.getAttribute("data-tip") } };
+        })()`;
+        const results: Record<string, any> = {};
+        await step("【固定标签图标区 hover】准备：两个已打开的固定标签（未偏离 / 已偏离）", 40_000, async () => {
+            await h.evalIn(O, `(async () => {
+                const r = await chrome.storage.local.get(["data:pinned", "data:spaces"]);
+                const pin = r["data:pinned"] ?? { bySpace: {} }; pin.bySpace ??= {};
+                const s = r["data:spaces"]; const id = s?.activeId ?? s?.items?.[0]?.id ?? s?.list?.[0]?.id ?? "default";
+                const mk = async (u) => { const t = await chrome.tabs.create({ url: u, active: false }); for (let i = 0; i < 50; i++) { const g = await chrome.tabs.get(t.id); if (g.status === "complete") break; await new Promise(r => setTimeout(r, 200)); } return t.id; };
+                const a = await mk("https://example.com/?pih-A"), b = await mk("https://example.com/?pih-B");
+                const l = (pin.bySpace[id] ??= []);
+                l.push({ id: "pihA", kind: "tab", url: "https://example.com/?pih-A", title: "pih A", tabId: a }, { id: "pihB", kind: "tab", url: "https://example.com/?pih-B", title: "pih B", tabId: b });
+                await chrome.storage.local.set({ "data:pinned": pin });
+                await chrome.tabs.update(b, { url: "https://example.org/?pih-B-drifted" });
+                for (let i = 0; i < 50; i++) { const g = await chrome.tabs.get(b); if (g.status === "complete" && g.url.includes("drifted")) break; await new Promise(r => setTimeout(r, 200)); }
+                return 1; })()`);
+            await sleep(1500);
+        });
+        const run = async (name: string, sel: string, pts: [string, (r: any) => [number, number]][]) => {
+            for (const [tag, at] of pts) await step(`【固定标签图标区 hover】${name} · ${tag}（真实鼠标）`, 20_000, async () => {
+                await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 }, S()); await sleep(400);
+                const r0 = await ev(probe(sel)); if (!r0) throw new Error("行不存在 " + sel);
+                const [x, y] = at(r0);
+                await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x - 3, y }, S()); await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, S());
+                await sleep(450); const r1 = await ev(probe(sel));
+                if (tag.includes("图标中心")) { try { const f = await shot(`pinhover-${name}-${tag.replace(/\W+/g, "")}`); (r1 as any).shot = f; } catch { /* 截图失败不影响 */ } }
+                await sleep(1800); const r2 = await ev(probe(sel));
+                results[`${name}|${tag}`] = { x, y, at450: r1, at2250: { tips: r2?.tips, hz: r2?.hz, hover: r2?.hover } };
+                console.log("  PIH", name, tag, JSON.stringify(results[`${name}|${tag}`]));
+                /* rel46 斜杠悬停（用户在真 Arc 实测；Rea pinned-slash.md §4 整行悬停隐藏与之冲突，以实测为准）：已偏离行只有指针在图标区（data-hz=icon：图标 / 行左缘 / 斜杠左侧）时 .arc-drift computed opacity = 0；
+                 * 标题 / 斜杠右侧空白区悬停 = 1（真实鼠标 :hover 为真，仍显示）。未偏离行没有斜杠。 */
+                if (process.env.PIH_ASSERT !== "0") {
+                    const iconZone = /图标中心|行左缘|斜杠左缘/.test(tag);
+                    if (name === "已偏离") { const op = r1?.slash?.opacity, want = iconZone ? "0" : "1"; if (!r1?.hover || op !== want) throw new Error(`斜杠 opacity 应为 ${want}（${iconZone ? "图标区" : "标题 / 空白区"}悬停），实测 ${op}（:hover=${r1?.hover}, hz=${r1?.hz}）`); }
+                    else if (r1?.slash) throw new Error("未偏离行不应有斜杠");
+                }
+            });
+        };
+        const selA = `.arc-pinned .arc-tab[data-sel="pin:pihA"]`, selB = `.arc-pinned .arc-tab[data-sel="pin:pihB"]`;
+        const ic = (r: any): [number, number] => [r.favRect[0] + r.favRect[2] / 2, r.favRect[1] + r.favRect[3] / 2];
+        await run("未偏离", selA, [["图标中心", ic], ["行左缘+4", r => [r.rowRect[0] + 4, ic(r)[1]]], ["标题中部", r => [r.titleRect[0] + 20, ic(r)[1]]]]);
+        await run("已偏离", selB, [["图标中心", ic], ["行左缘+4", r => [r.rowRect[0] + 4, ic(r)[1]], ], ["斜杠左缘-2", r => [r.slashRect[0] - 2, ic(r)[1]]], ["斜杠右缘+2", r => [r.slashRect[0] + r.slashRect[2] + 2, ic(r)[1]]], ["标题中部", r => [r.titleRect[0] + 20, ic(r)[1]]]]);
+        // 重渲染：指针停在图标上不动，后台来一次标签更新（实机里 favicon / 标题 / 加载状态都会触发），行被重建后 hover 状态是否还在
+        await step("【固定标签图标区 hover】已偏离 · 指针不动 + 后台标签更新（重渲染）", 40_000, async () => {
+            await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 }, S()); await sleep(400);
+            const r0 = await ev(probe(selB)); const [x, y] = ic(r0);
+            await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x - 2, y }, S()); await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, S()); await sleep(450);
+            await ev(`window.__pihRow = document.querySelector(${JSON.stringify(selB)}); 1`);
+            const before = await ev(probe(selB));
+            const how: Record<string, any> = {};
+            for (const kind of ["新建后台标签", "刷新被固定的偏离标签本身"]) {
+                if (kind === "新建后台标签") await h.evalIn(O, `chrome.tabs.create({ url: "https://example.com/?pih-stir-" + Date.now(), active: false }).then(t => new Promise(r => setTimeout(() => chrome.tabs.remove(t.id).then(() => r(1)), 1500)))`, { ms: 8000 });
+                else await h.evalIn(O, `(async () => { const pin = (await chrome.storage.local.get("data:pinned"))["data:pinned"]; let id; for (const l of Object.values(pin.bySpace)) for (const n of l) if (n.id === "pihB") id = n.tabId; await chrome.tabs.reload(id); return 1; })()`, { ms: 8000 });
+                await sleep(2500);
+                const after = await ev(probe(selB)); const same = await ev(`window.__pihRow === document.querySelector(${JSON.stringify(selB)})`);
+                const subLeft = await ev(`document.querySelector(${JSON.stringify(selB)})?.style.getPropertyValue("--arc-sub-left")`);
+                how[kind] = { rowReplaced: !same, hz: after?.hz, titleDy: after?.titleDy, subOpacity: after?.sub?.opacity, subLeft, closeOpacity: after?.close?.opacity, tips: after?.tips, hover: after?.hover, tipBlocked: after?.tipBlocked, shot: await shot(`pinhover-rerender-still-${kind.slice(0, 2)}`) };
+                // 指针仍不动之后再抖 1px 停下（实机里触控板的微动）：2.6s 后的状态
+                await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + 1, y }, S()); await sleep(2600);
+                const j = await ev(probe(selB)); how[kind].afterJiggle = { hz: j?.hz, titleDy: j?.titleDy, closeOpacity: j?.close?.opacity, tips: j?.tips };
+                await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, S()); await sleep(450);
+            }
+            results["重渲染"] = { before: { hz: before?.hz, titleDy: before?.titleDy }, ...how };
+            console.log("  PIH 重渲染", JSON.stringify(results["重渲染"]));
+            if (process.env.PIH_ASSERT !== "0") for (const [k, v] of Object.entries(how) as [string, any][]) if (!(v.hz === "icon" && v.titleDy === -7 && v.closeOpacity === "0" && v.subOpacity === "1" && parseFloat(v.subLeft) > 0 && !v.tips?.length && v.afterJiggle?.hz === "icon" && !v.afterJiggle?.tips?.length)) throw new Error(`整屏重绘后图标区悬停态丢失（${k}）：` + JSON.stringify(v));
+        });
+        (await import("fs")).writeFileSync(`${PIH_OUT}/pinhover-results.json`, JSON.stringify(results, null, 1));
+        await step("【固定标签图标区 hover】收尾：还原固定数据、关标签", 20_000, async () => {
+            await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 }, S());
+            await h.evalIn(O, `(async () => { const r = ${JSON.stringify(saved)}; const cur = (await chrome.storage.local.get("data:pinned"))["data:pinned"]; const ids = []; for (const l of Object.values(cur?.bySpace ?? {})) for (const n of l) if (n.id === "pihA" || n.id === "pihB") ids.push(n.tabId);
+                if (r["data:pinned"]) await chrome.storage.local.set({ "data:pinned": r["data:pinned"] }); else await chrome.storage.local.remove("data:pinned"); await chrome.tabs.remove(ids.filter(Boolean)).catch(() => {}); return 1; })()`);
+        });
+    }
+    }
+    if (PH.has("hoverrerender")) {
+    // ===== rel42 悬停 × 整屏重绘 通用扫查（同 pinned-icon-hover ROOTCAUSE 的一类 bug）=====
+    // 背景：PanelShell.renderAll 每次标签 / 收藏 / Space 变化整屏重建；keepHover 把指针下那一条链（祖先 + 行）留在文档里、把监听换成“新树登记的那批”，
+    //       新树里没进文档的节点（闭包捕获的 row / img / grid / bar / host …）全是游离节点；syncAttrs 还会摘掉运行时写到旧节点上的 style / class / data-*。
+    // 做法：真实鼠标（Input.dispatchMouseEvent mouseMoved）停在每个候选上不动 → 后台制造重绘（a 标题 / b favicon / c 加载状态 / d 后台标签增删，行自身标题另测）
+    //       → 断言 hover 效果仍在（同一节点、:hover、计算样式不变、关闭钮可见、tooltip 恰好 1 个）+ 各候选特有的运行时写入没被摘（见 CANDS.extra）
+    //       → 再用真实点击验证“被保留的节点”上的按钮仍然有效（× 的 archiving 动画 / 行激活 / 收藏激活 / 文件夹折叠 / Space 圆点切换）。
+    // 环境变量：HR_ONLY=正则（只跑名称匹配的候选 / 点击项）、HR_TRIG=z,a,b,c,d,s,f,n,u（触发子集；z=无重绘对照；g=自身 favicon 404 需显式加，Chrome 不上报失败的 favicon → 不重绘 → 记为跳过）、HR_OUT=结果 JSON 目录、HR_ASSERT=0（只记录不判失败）。
+    {
+        const O = opener!.sessionId;
+        const HR_OUT = process.env.HR_OUT ?? SHOTS;
+        const ONLY = process.env.HR_ONLY ? new RegExp(process.env.HR_ONLY) : null;
+        const TRIGS = new Set((process.env.HR_TRIG ?? "z,a,b,c,d,s,f,n,u").split(","));
+        const ASSERT = process.env.HR_ASSERT !== "0";
+        const fs = await import("fs");
+        const savedHr = await h.evalIn(O, `chrome.storage.local.get(["data:favorites", "data:pinned", "data:spaces"])`).catch(() => ({})) as Record<string, unknown>;
+        // 本机夹具服务：页面标题 / favicon / 加载时长都可控（真实网页的 tabs.onUpdated：title / favIconUrl / status）
+        const palette = ["#e5484d", "#30a46c", "#3e63dd", "#f5d90a", "#8e4ec6", "#12a594", "#f76b15", "#d6409f"];
+        const srv = Bun.serve({
+            hostname: "127.0.0.1", port: 0, async fetch(req) {
+                const u = new URL(req.url);
+                if (u.pathname.startsWith("/ico/")) {
+                    const n = u.pathname.slice(5).replace(/\.svg$/, "");
+                    if (n === "bad") return new Response("nope", { status: 404 });
+                    const c = palette[Math.abs([...n].reduce((a, ch) => a * 31 + ch.charCodeAt(0), 7)) % palette.length];
+                    return new Response(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="${c}"/></svg>`, { headers: { "content-type": "image/svg+xml", "cache-control": "no-store" } });
+                }
+                const slow = Number(u.searchParams.get("slow") ?? 0); if (slow) await sleep(slow);
+                const ic = u.searchParams.get("i");
+                return new Response(`<!doctype html><title>${(u.searchParams.get("t") ?? "hr").replace(/[<&]/g, "")}</title>${ic ? `<link rel="icon" type="image/svg+xml" href="/ico/${ic}.svg">` : ""}<body>hr`, { headers: { "content-type": "text/html", "cache-control": "no-store" } });
+            },
+        });
+        const BASE = `http://127.0.0.1:${srv.port}`, BASE2 = `http://localhost:${srv.port}`;
+        const page = (t: string, o: { i?: string; slow?: number; base?: string } = {}) => `${o.base ?? BASE}/page?t=${encodeURIComponent(t)}${o.i ? "&i=" + o.i : ""}${o.slow ? "&slow=" + o.slow : ""}`;
+        const R: Record<string, any> = {}; // 结果（数值证据）
+        const T: Record<string, number> = {}; // 夹具标签 id
+        let SP2 = "", SP1 = "", origTab = 0;
+        const mkTab = async (name: string, url: string, active = false) => { T[name] = await h.evalIn(O, `(async () => { const t = await chrome.tabs.create({ url: ${JSON.stringify(url)}, active: ${active} }); for (let i = 0; i < 60; i++) { const g = await chrome.tabs.get(t.id); if (g.status === "complete") break; await new Promise(r => setTimeout(r, 150)); } return t.id; })()`, { ms: 15000 }) as number; return T[name]; };
+        const oev = (js: string, ms = 10000) => h.evalIn(O, js, { ms });
+        /* rel45：悬停段的所有 CDP 调用都带显式上限（HR_CDP_MS = 8s；输入事件 5s），不再靠 send 的默认 15s / 步骤级 60s 兜底 */
+        const HR_CDP_MS = 8000;
+        const evq = (js: string) => h.evalIn(S(), `${LOCATE_SRC}\n${THEME_SRC}\n${js}`, { ms: HR_CDP_MS });
+        const moveTo = async (x: number, y: number) => { await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x - 3, y }, S(), 5000); await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, S(), 5000); };
+        const away = async () => { await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 }, S(), 5000); await sleep(250); };
+        // 页面侧探针：同一选择器在“指针不在”和“指针在”时各量一次；返回的都是可序列化的数值 / 字符串
+        const PROBE = `window.__hrProbe = (sel) => {
+            const el = document.querySelector(sel); if (!el) return null;
+            const cs = getComputedStyle(el), q = s => el.querySelector(s), op = e => e ? getComputedStyle(e).opacity : null;
+            const close = q(".arc-tab-close"), more = q(".arc-space-more"), grid = el.closest(".arc-fav-grid") ?? (el.classList.contains("arc-fav-grid") ? el : null), bar = el.closest(".arc-space-bar") ?? (el.classList.contains("arc-space-bar") ? el : null);
+            const broken = [...el.querySelectorAll("img")].filter(i => i.getAttribute("src") && i.complete && i.naturalWidth === 0).length;
+            const r = el.getBoundingClientRect();
+            return { same: window.__hrRef === el, conn: el.isConnected, hover: el.matches(":hover"), sig: [cs.backgroundColor, cs.backgroundImage, cs.boxShadow, cs.transform, cs.filter, cs.color].join("|"),
+                closeOp: op(close), moreOp: op(more), tips: [...document.querySelectorAll(".arc-tooltip:not(.out)")].map(t => t.textContent.trim().slice(0, 60)), tt: el.hasAttribute("data-arc-tt"),
+                title: q(".arc-tab-title")?.textContent ?? null, selected: [...document.querySelectorAll(".arc-tab.selected")].map(e => e.dataset.sel), cls: el.className, rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+                grid: grid ? { style: grid.getAttribute("style") ?? "", cols: getComputedStyle(grid).gridTemplateColumns.split(" ").length, colsVar: grid.style.getPropertyValue("--fav-cols") } : null,
+                bar: bar ? { style: bar.getAttribute("style") ?? "", cls: bar.className, dockW: bar.style.getPropertyValue("--dock-w"), dotW: bar.querySelector(".arc-space-dot")?.getBoundingClientRect().width ?? 0 } : null,
+                host: document.querySelector(".arc-urlbar-host")?.textContent ?? null, broken, activeDot: document.querySelector(".arc-space-dot.active")?.dataset.space ?? null,
+                collapsed: el.dataset.collapsed ?? el.closest(".arc-folder")?.dataset.collapsed ?? null,
+                nat: (() => { const n = [...el.querySelectorAll("[title]")].map(e => e.getAttribute("title")); for (let a = el; a && a.id !== "app"; a = a.parentElement) if (a.hasAttribute("title")) n.push(a.getAttribute("title")); return n; })() };
+        }; 1`;
+        const probe = (sel: string) => evq(`${PROBE}\n;window.__hrProbe(${JSON.stringify(sel)})`) as Promise<any>;
+        const rectOf = async (sel: string, dx?: (r: any) => number) => { const r = await evq(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; e.scrollIntoView({ block: "nearest" }); const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`) as any; if (!r) return null; return { x: dx ? dx(r) : r.x + Math.min(r.w / 2, 40), y: r.y + r.h / 2, r }; };
+        const nTips = (p: any) => p?.tips?.length ?? 0;
+        const trigJs = (k: string, who: { trig: number; self?: number }) => ({
+            a: `chrome.scripting.executeScript({ target: { tabId: ${who.trig} }, func: t => { document.title = t; }, args: ["HR title " + Date.now()] }).then(() => 1)`,
+            b: `chrome.scripting.executeScript({ target: { tabId: ${who.trig} }, func: n => { let l = document.querySelector("link[rel~=icon]"); if (!l) { l = document.createElement("link"); l.rel = "icon"; document.head.appendChild(l); } l.type = "image/svg+xml"; l.href = "/ico/" + n + ".svg"; }, args: ["f" + Date.now()] }).then(() => 1)`,
+            c: `(async () => { await chrome.tabs.update(${who.trig}, { url: ${JSON.stringify(page("HR load", { i: "ld", slow: 900 }))} }); for (let i = 0; i < 40; i++) { const g = await chrome.tabs.get(${who.trig}); if (g.status === "complete") break; await new Promise(r => setTimeout(r, 150)); } return 1; })()`,
+            d: `(async () => { const t = await chrome.tabs.create({ url: ${JSON.stringify(page("HR bgtab"))}, active: false }); await new Promise(r => setTimeout(r, 900)); await chrome.tabs.remove(t.id); return 1; })()`,
+            u: `(async () => { const t = await chrome.tabs.get(${T.act}); const to = t.url.includes("localhost") ? ${JSON.stringify(BASE)} : ${JSON.stringify(BASE2)}; await chrome.tabs.update(${T.act}, { url: to + "/page?t=HR+url&i=u" + Date.now() }); for (let i = 0; i < 40; i++) { const g = await chrome.tabs.get(${T.act}); if (g.status === "complete" && g.url.startsWith(to)) break; await new Promise(r => setTimeout(r, 150)); } return 1; })()`,
+            f: who.self != null ? `chrome.scripting.executeScript({ target: { tabId: ${who.self} }, func: n => { let l = document.querySelector("link[rel~=icon]"); if (!l) { l = document.createElement("link"); l.rel = "icon"; document.head.appendChild(l); } l.type = "image/svg+xml"; l.href = "/ico/" + n + ".svg"; }, args: ["sf" + Date.now()] }).then(() => 1)` : "",
+            g: who.self != null ? `chrome.scripting.executeScript({ target: { tabId: ${who.self} }, func: () => { let l = document.querySelector("link[rel~=icon]"); if (!l) { l = document.createElement("link"); l.rel = "icon"; document.head.appendChild(l); } l.type = "image/svg+xml"; l.href = "/ico/bad.svg?" + Date.now(); }, args: [] }).then(() => 1)` : "",
+            n: who.self != null ? `(async () => { await chrome.tabs.update(${who.self}, { url: ${JSON.stringify(page("HR self noicon"))} }); for (let i = 0; i < 40; i++) { const g = await chrome.tabs.get(${who.self}); if (g.status === "complete") break; await new Promise(r => setTimeout(r, 150)); } return 1; })()` : "",
+            s: who.self != null ? `chrome.scripting.executeScript({ target: { tabId: ${who.self} }, func: t => { document.title = t; }, args: ["HR self " + Date.now()] }).then(() => 1)` : "",
+        } as Record<string, string>)[k];
+        const TRIG_NAME: Record<string, string> = { z: "z 对照：不触发重绘", a: "a 后台标签标题变化", b: "b 后台标签 favicon 变化", c: "c 后台标签加载状态变化", d: "d 后台标签增删", s: "s 悬停行自身标题变化", f: "f 悬停行自身 favicon 换新图", g: "g 悬停行自身 favicon 加载失败", n: "n 悬停行自身导航到无图标页", u: "u 活动页换域名" };
+        type Cand = { name: string; sel: () => string; at?: (r: any) => number; tip?: boolean; close?: boolean; self?: string; extra?: (p0: any, p1: any, k: string, base: any) => string[]; then?: { sel: () => string; tip?: boolean; reenter?: boolean }; trigs?: string };
+        const CANDS: Cand[] = [];
+        const BASE0: Record<string, any> = {}; // 每个候选第一次（指针不在、尚未经历悬停重绘）的量值 = 正确基线；之后每次都和它比（被摘的 style 不会自己恢复，只和上一次比会漏）
+        const issuesOf = (c: Cand, k: string, p0: any, p1: any): string[] => {
+            const bad: string[] = [];
+            if (!p1) return [`节点在重绘后找不到（选择器 ${c.sel()}）`];
+            if (!p1.same || !p1.conn) bad.push(`悬停节点被换掉（same=${p1.same} connected=${p1.conn}）`);
+            if (!p1.hover) bad.push(":hover 丢了");
+            if (p1.sig !== p0.sig) bad.push(`hover 计算样式变了 ${JSON.stringify(p0.sig)} → ${JSON.stringify(p1.sig)}`);
+            if (c.close && (p1.closeOp !== "1" || p0.closeOp !== "1")) bad.push(`关闭钮 opacity ${p0.closeOp} → ${p1.closeOp}（应为 1）`);
+            if (c.tip && nTips(p1) !== 1) bad.push(`tooltip 个数 ${nTips(p1)}（应恰好 1）${JSON.stringify(p1.tips)}`);
+            if (c.tip === false && nTips(p1) !== 0) bad.push(`不该有 tooltip 却有 ${JSON.stringify(p1.tips)}`);
+            if (p1.nat?.length > (p0.nat?.length ?? 0)) bad.push(`重绘后悬停节点 / 祖先 / 后代多出原生 title（浏览器原生提示会和 ArcTooltip 叠出两个）：${JSON.stringify(p0.nat)} → ${JSON.stringify(p1.nat)}`);
+            if (p1.broken) bad.push(`行内有 ${p1.broken} 个加载失败的 <img>（favicon 没有换成 EmptyFavicon）`);
+            if (k === "s" && c.self && p1.title && !/HR self/.test(p1.title)) bad.push(`自身标题没更新：${JSON.stringify(p1.title)}`);
+            return [...bad, ...(c.extra?.(p0, p1, k, BASE0[c.name]) ?? [])];
+        };
+        let hrGen = 0; // rel45：时钟跳变重试时，上一轮残留的 fn 在下一个检查点自行退出，不和新一轮抢鼠标
+        const runCand = async (c: Cand, k: string) => {
+            const name = `【悬停×重绘】${c.name} · ${TRIG_NAME[k]}`;
+            if (ONLY && !ONLY.test(c.name) && !ONLY.test(name)) return;
+            await step(name, 60_000, async () => {
+                const my = ++hrGen; const live = () => { if (my !== hrGen) throw new Error("本轮已被时钟跳变重试取代"); };
+                setStage("候选探测 away");
+                const sel = c.sel();
+                await away();
+                if (k === "z") { await oev(trigJs("a", { trig: T.trig }), 10000); await sleep(900); } // 对照：先在指针不在任何候选上时重绘一次，把之前悬停重绘留下的旧节点全部换新，再测“无重绘”的基线行为
+                live(); setStage("idle probe");
+                const idle = await probe(sel); if (!idle) throw new Error("候选不存在 " + sel); BASE0[c.name] ??= idle;
+                const pt = await rectOf(sel, c.at); if (!pt) throw new Error("没有位置 " + sel);
+                live(); setStage("moveTo 候选"); await moveTo(pt.x, pt.y); const tPark = mono(); await sleep(350);
+                live(); setStage("装观察者 + p0 probe");
+                await evq(`window.__hrRef = document.querySelector(${JSON.stringify(sel)}); window.__hrN = 0; window.__hrMO?.disconnect(); window.__hrMO = new MutationObserver(() => { window.__hrN++; }); window.__hrMO.observe(document.getElementById("app"), { childList: true, subtree: true }); 1`);
+                const p0 = await probe(sel);
+                if (!p0.hover) throw new Error(`真实鼠标没停到候选上（${sel} @ ${Math.round(pt.x)},${Math.round(pt.y)}）`);
+                const who = { trig: T.trig, self: c.self ? T[c.self] : undefined };
+                const js = k === "z" ? "1" : trigJs(k, who); if (!js) return "skip";
+                await oev(js, 15000);
+                live(); setStage(`触发 ${k} 后等重绘`);
+                const okRender = k === "z" ? true : await pollUntil(() => evq(`window.__hrN > 0`) as Promise<boolean>, 5000);
+                if (!okRender && k === "g") { console.log("  HR 跳过：Chrome 不为加载失败的 favicon 发 tabs.onUpdated → 无重绘"); return "skip"; }
+                live(); setStage("等 tooltip（指针不动 ≥2.7s）"); await sleep(Math.max(500, 2700 - (mono() - tPark))); // 指针不动已过 ≥2.7s：行 tooltip（1.5s）必然该出现
+                live(); setStage("p1 probe");
+                const p1 = await probe(sel);
+                const bad = okRender ? issuesOf(c, k, p0, p1) : ["这个触发没有引起整屏重绘（#app 无子树变化）→ 场景无效"];
+                R[`${c.name}|${k}`] = { idle: idle.sig, p0: { sig: p0.sig, closeOp: p0.closeOp, tips: p0.tips }, p1: { same: p1?.same, hover: p1?.hover, sig: p1?.sig, closeOp: p1?.closeOp, tips: p1?.tips, tt: p1?.tt, grid: p1?.grid, bar: p1?.bar, host: p1?.host, broken: p1?.broken, selected: p1?.selected, title: p1?.title }, renders: await ev(`window.__hrN`), base: { grid: BASE0[c.name]?.grid, bar: BASE0[c.name]?.bar }, nat: p1?.nat, bad };
+                console.log("  HR", c.name, k, JSON.stringify({ idleEqHover: idle.sig === p0.sig, ...R[`${c.name}|${k}`].p1, renders: R[`${c.name}|${k}`].renders }).slice(0, 700));
+                live();
+                if (!bad.length && c.then) { // 之后把指针移到另一个节点上（真实移动），看它的行为是否正常（例如被同容器兄弟换监听的文件夹行 tooltip）
+                    const t2 = c.then.reenter ? sel : c.then.sel();
+                    if (c.then.reenter) await away();
+                    const p2 = await rectOf(t2, c.at); if (p2) { live(); setStage("then：移到另一个节点"); await moveTo(p2.x, p2.y); await sleep(2400); live(); const q = await probe(t2); if (c.then.tip && nTips(q) !== 1) bad.push(`重绘后指针移入 ${t2}：tooltip 个数 ${nTips(q)}（应恰好 1）${JSON.stringify(q?.tips)}`); }
+                }
+                if (bad.length) { setStage("失败截图"); const f = await shot(`hr-${c.name.replace(/\W+/g, "")}-${k}`); const msg = `${bad.join(" ‖ ")} 截图 ${f}`; R[`${c.name}|${k}`].shot = f; if (ASSERT) throw new Error(msg); else console.log("  HR（不判失败）", msg); }
+            }, { needPanel: true, jumpRetry: 2 }); // rel45：这一步可重入（先 away 复位）；超时且期间检测到时钟跳变才重试，最多 2 次
+        };
+        await step("【悬停×重绘】准备：Today / 固定 / 文件夹 / 收藏 / 第 2 个 Space / 活动页（结束后恢复）", 60_000, async () => {
+            origTab = await oev(`chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => t?.id ?? 0)`) as number;
+            const sp = (savedHr["data:spaces"] ?? (await h.evalIn(O, `chrome.storage.local.get("data:spaces")`) as any)["data:spaces"]) as any;
+            SP1 = sp?.activeId ?? sp?.items?.[0]?.id ?? sp?.list?.[0]?.id ?? sp?.spaces?.[0]?.id ?? "default";
+            await mkTab("trig", page("HR trig", { i: "t0" })); await mkTab("tA", page("HR today A", { i: "a1" })); await mkTab("tB", page("HR today B", { i: "b1" }));
+            await mkTab("pin", page("HR pin", { i: "p1" })); await mkTab("pin2", page("HR pin2", { i: "p2" })); await mkTab("child", page("HR child", { i: "c1" })); await mkTab("fav", page("HR fav", { i: "v1" }));
+            const spaces = await oev(`(async () => {
+                const r = await chrome.storage.local.get(["data:favorites", "data:pinned", "data:spaces"]);
+                const fav = r["data:favorites"] ?? { items: [] }; fav.items = [...fav.items, { id: "hrfav", url: ${JSON.stringify(page("HR fav", { i: "v1" }))}, title: "HR fav", tabId: ${T.fav} }, { id: "hrfav2", url: ${JSON.stringify(page("HR fav2"))}, title: "HR fav2" }];
+                const pin = r["data:pinned"] ?? { bySpace: {} }; pin.bySpace ??= {}; const l = (pin.bySpace[${JSON.stringify(SP1)}] ??= []);
+                l.push({ id: "hrPin", kind: "tab", url: ${JSON.stringify(page("HR pin", { i: "p1" }))}, title: "HR pin", tabId: ${T.pin} }, { id: "hrPin2", kind: "tab", url: ${JSON.stringify(page("HR pin2", { i: "p2" }))}, title: "HR pin2", tabId: ${T.pin2} },
+                    { id: "hrFold", kind: "folder", title: "HR Folder", collapsed: false, children: [{ id: "hrChild", kind: "tab", url: ${JSON.stringify(page("HR child", { i: "c1" }))}, title: "HR child", tabId: ${T.child} }] });
+                const sp = r["data:spaces"]; let second = null;
+                if (sp?.spaces?.length === 1) { second = "hrs2"; sp.spaces.push({ ...sp.spaces[0], id: second, name: "HrSpace2" }); await chrome.storage.local.set({ "data:spaces": sp }); } else second = sp?.spaces?.find(s => s.id !== ${JSON.stringify(SP1)})?.id ?? null;
+                await chrome.storage.local.set({ "data:favorites": fav, "data:pinned": pin }); return second; })()`, 15000) as string | null;
+            SP2 = spaces ?? ""; if (!SP2) throw new Error("没有第 2 个 Space，无法测圆点");
+            await mkTab("act", page("HR active", { i: "ac" }), true);
+            await sleep(2200); await closeAll();
+            console.log("  HR 夹具", JSON.stringify({ T, SP1, SP2, BASE, origTab }));
+        });
+        const mid = (r: any) => r.x + r.w / 2; // 行的标题区（避开 data-hz="icon" 图标区：那里按设计隐藏关闭钮）
+        const row = (n: string) => `.arc-today .arc-tab[data-sel="tab:${T[n]}"]`;
+        const dock = (_p0: any, p1: any, _k: string, p0: any) => { const b: string[] = []; if (p0?.bar && p1.bar) { if (p0.bar.dockW && p1.bar.dockW !== p0.bar.dockW) b.push(`Space 圆点栏 --dock-w ${JSON.stringify(p0.bar.dockW)} → ${JSON.stringify(p1.bar.dockW)}（style ${JSON.stringify(p0.bar.style)} → ${JSON.stringify(p1.bar.style)}）`); if (p0.bar.cls !== p1.bar.cls) b.push(`圆点栏 class ${JSON.stringify(p0.bar.cls)} → ${JSON.stringify(p1.bar.cls)}（compact 被摘）`); if (Math.abs(p0.bar.dotW - p1.bar.dotW) > 0.5) b.push(`圆点宽 ${p0.bar.dotW} → ${p1.bar.dotW}`); } return b; };
+        const fav = (_p0: any, p1: any, _k: string, p0: any) => { const b: string[] = []; if (p0?.grid && p1.grid) { if (p0.grid.style && !p1.grid.style.includes("--fav-cols")) b.push(`收藏网格 style 被摘：${JSON.stringify(p0.grid.style)} → ${JSON.stringify(p1.grid.style)}`); if (p0.grid.cols !== p1.grid.cols) b.push(`收藏网格列数 ${p0.grid.cols} → ${p1.grid.cols}（--fav-cols ${JSON.stringify(p0.grid.colsVar)} → ${JSON.stringify(p1.grid.colsVar)}）`); } return b; };
+        CANDS.push(
+            { name: "今日标签行", sel: () => row("tA"), at: mid, close: true, tip: true, self: "tA", trigs: "zabcdsfgn" },
+            { name: "固定标签行（已打开）", sel: () => `.arc-pinned .arc-tab[data-sel="pin:hrPin"]`, at: mid, close: true, tip: true, self: "pin", trigs: "zabcdsfgn" },
+            { name: "文件夹内固定行", sel: () => `.arc-folder-body .arc-tab[data-sel="pin:hrChild"]`, at: mid, close: true, tip: true, self: "child", trigs: "zabcdsfgn", then: { sel: () => `.arc-folder-head[data-folder="hrFold"]`, tip: true } },
+            { name: "文件夹行", sel: () => `.arc-folder-head[data-folder="hrFold"]`, at: mid, tip: true, trigs: "zabcd", then: { sel: () => "", tip: true, reenter: true } },
+            { name: "收藏格", sel: () => `.arc-fav-tile[data-fav="hrfav"]`, trigs: "abcd", extra: fav },
+            { name: "Space 圆点（非活动）", sel: () => `.arc-space-dot[data-space="${SP2}"]`, tip: true, trigs: "zabcd", extra: dock },
+            { name: "Space 圆点（活动）", sel: () => `.arc-space-dot[data-space="${SP1}"]`, tip: true, trigs: "abcd", extra: dock },
+            { name: "Space 标题行", sel: () => `.arc-space-title`, tip: true, trigs: "zabcd", extra: (p0, p1) => (p0.moreOp === "1" && p1.moreOp !== "1" ? [`标题行右侧 … 钮 opacity ${p0.moreOp} → ${p1.moreOp}`] : []) },
+            { name: "地址栏", sel: () => `[data-test="urlbar"]`, tip: false, trigs: "abcdu", extra: (p0, p1, k) => (k === "u" && p0.host === p1.host ? [`活动页换了域名但地址栏文字没更新：${JSON.stringify(p0.host)} → ${JSON.stringify(p1.host)}（悬停的地址栏整块原样保留）`] : []) },
+            { name: "+ New Tab 按钮", sel: () => `.arc-newtab`, tip: false, trigs: "abcd" },
+            { name: "Today 清除钮", sel: () => `[data-test="today-clear"]`, tip: true, trigs: "abcd" },
+        );
+        for (const c of CANDS) for (const k of (c.trigs ?? "abcds").split("")) { if (!TRIGS.has(k)) continue; await runCand(c, k); }
+        // ===== 点击验证：重绘后，被保留的旧节点上的按钮仍然有效 =====
+        const modClick = async (x: number, y: number, modifiers: number) => { for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1, modifiers }, S()); };
+        const park = async (sel: string, dx?: (r: any) => number) => { await away(); const pt = await rectOf(sel, dx); if (!pt) throw new Error("没有位置 " + sel); await moveTo(pt.x, pt.y); await sleep(350); await ev(`window.__hrRef = document.querySelector(${JSON.stringify(sel)}); window.__hrN = 0; window.__hrMO?.disconnect(); window.__hrMO = new MutationObserver(() => { window.__hrN++; }); window.__hrMO.observe(document.getElementById("app"), { childList: true, subtree: true }); 1`); return pt; };
+        const rerender = async () => { await oev(trigJs("a", { trig: T.trig }), 10000); if (!(await pollUntil(() => ev(`window.__hrN > 0`) as Promise<boolean>, 5000))) throw new Error("触发没有引起整屏重绘 → 场景无效"); await sleep(700); };
+        const clickStep = async (name: string, fn: () => Promise<string[]>) => {
+            const full = `【悬停×重绘·点击】${name}`; if (ONLY && !ONLY.test(full)) return;
+            await step(full, 60_000, async () => { const bad = await fn(); R[full] = { bad }; if (bad.length) { const f = await shot("hr-click"); if (ASSERT) throw new Error(bad.join(" ‖ ") + " 截图 " + f); else console.log("  HR（不判失败）", bad.join(" ‖ ")); } });
+        };
+        const ARCH = `window.__hrArch = []; window.__hrArchMO?.disconnect(); window.__hrArchMO = new MutationObserver(ms => { for (const m of ms) { const t = m.target; if (t instanceof HTMLElement && t.classList.contains("archiving")) window.__hrArch.push({ sel: t.dataset.sel ?? "", conn: t.isConnected }); } }); window.__hrArchMO.observe(document.body, { attributes: true, attributeFilter: ["class"], subtree: true }); 1`;
+        for (const rr of [false, true]) await clickStep(`今日行：${rr ? "重绘后" : "对照（不重绘）"}点 × → 关闭标签 + archiving 淡出动画落在可见行上`, async () => {
+            const id = await mkTab(rr ? "kill" : "kill0", page(rr ? "HR kill" : "HR kill0", { i: "k1" })); await sleep(1200);
+            const sel = row(rr ? "kill" : "kill0"); await park(sel, mid); await ev(ARCH); if (rr) await rerender();
+            const bad: string[] = []; const ok = await realClick(sel + " .arc-tab-close"); if (!ok) return ["关闭钮不可点"];
+            const gone = await pollUntil(() => oev(`chrome.tabs.get(${id}).then(() => false, () => true)`) as Promise<boolean>, 3000);
+            const arch = await ev(`window.__hrArch`) as { sel: string; conn: boolean }[];
+            if (!gone) bad.push("点 × 标签没有关闭");
+            if (!arch.some(a => a.sel === `tab:${id}` && a.conn)) bad.push(`archiving 没有加到文档里的那一行上（记录 ${JSON.stringify(arch)}）：关闭钮闭包捕获了新树里游离的 row`);
+            return bad;
+        });
+        await clickStep("固定行（已打开）：重绘后点 − → 关闭标签 + archiving 在可见行上", async () => {
+            const sel = `.arc-pinned .arc-tab[data-sel="pin:hrPin2"]`; await park(sel, mid); await ev(ARCH); await rerender();
+            const ok = await realClick(sel + " .arc-tab-close"); if (!ok) return ["关闭钮不可点"];
+            const bad: string[] = [];
+            const gone = await pollUntil(() => oev(`chrome.tabs.get(${T.pin2}).then(() => false, () => true)`) as Promise<boolean>, 3000);
+            const arch = await ev(`window.__hrArch`) as { sel: string; conn: boolean }[];
+            if (!gone) bad.push("重绘后点 − 标签没有关闭");
+            if (!arch.some(a => a.sel === "pin:hrPin2" && a.conn)) bad.push(`archiving 没有加到文档里的那一行上（记录 ${JSON.stringify(arch)}）`);
+            return bad;
+        });
+        await clickStep("今日行：重绘后点行 → 该标签被激活", async () => {
+            await oev(`chrome.tabs.update(${T.act}, { active: true })`); await sleep(500);
+            const sel = row("tB"); await park(sel, mid); await rerender();
+            if (!(await realClick(sel + " .arc-tab-title"))) return ["行不可点"];
+            const act = await pollUntil(() => oev(`chrome.tabs.get(${T.tB}).then(t => t.active)`) as Promise<boolean>, 3000);
+            return act ? [] : ["重绘后点今日行没有激活该标签"];
+        });
+        await clickStep("收藏格：重绘后点格 → 已打开的收藏标签被激活", async () => {
+            await oev(`chrome.tabs.update(${T.act}, { active: true })`); await sleep(500);
+            const sel = `.arc-fav-tile[data-fav="hrfav"]`; await park(sel); await rerender();
+            if (!(await realClick(sel))) return ["收藏格不可点"];
+            const act = await pollUntil(() => oev(`chrome.tabs.get(${T.fav}).then(t => t.active)`) as Promise<boolean>, 3000);
+            return act ? [] : ["重绘后点收藏格没有激活标签"];
+        });
+        await clickStep("文件夹行：重绘后点两次 → 折叠 / 展开各生效一次", async () => {
+            const sel = `.arc-folder-head[data-folder="hrFold"]`; const bad: string[] = [];
+            const st = async () => await ev(`document.querySelector(${JSON.stringify(sel)})?.closest(".arc-folder")?.dataset.collapsed ?? null`);
+            await park(sel); await rerender(); const s0 = await st();
+            await realClick(sel); await sleep(700); const s1 = await st();
+            await realClick(sel); await sleep(700); const s2 = await st();
+            if (s0 === s1) bad.push(`第一次点文件夹行没有折叠（状态 ${JSON.stringify(s0)} → ${JSON.stringify(s1)}）`);
+            if (s2 !== s0) bad.push(`第二次点文件夹行没有展开回来（${JSON.stringify(s0)} → ${JSON.stringify(s1)} → ${JSON.stringify(s2)}）`);
+            return bad;
+        });
+        await clickStep("Space 圆点：重绘后点圆点 → 切换空间，再点回", async () => {
+            const sel = `.arc-space-dot[data-space="${SP2}"]`; const bad: string[] = [];
+            await park(sel); await rerender();
+            await realClick(sel); const to2 = await pollUntil(() => ev(`document.querySelector(".arc-space-dot.active")?.dataset.space === ${JSON.stringify(SP2)}`) as Promise<boolean>, 3000);
+            const act = await ev(`[...document.querySelectorAll(".arc-space-dot.active")].map(e => e.dataset.space)`);
+            const ttl = await ev(`document.querySelector(".arc-space-title .arc-space-name")?.textContent ?? document.querySelector(".arc-space-title")?.textContent`);
+            if (!to2) bad.push(`点圆点后标题已是 ${JSON.stringify(ttl)}（空间确实切了），但圆点 active=${JSON.stringify(act)}：悬停的圆点按钮被 keepHover 整块原样保留，active class 没更新`);
+            await sleep(500); const back = `.arc-space-dot[data-space="${SP1}"]`; await realClick(back);
+            const to1 = await pollUntil(() => ev(`document.querySelector(".arc-space-dot.active")?.dataset.space === ${JSON.stringify(SP1)}`) as Promise<boolean>, 3000);
+            if (!to1) bad.push(`切到第 2 个后点回第 1 个失败（active=${JSON.stringify(await ev(`[...document.querySelectorAll(".arc-space-dot.active")].map(e => e.dataset.space)`))}）`);
+            return bad;
+        });
+        await clickStep("多选：⌘/Ctrl 点第 2 行后重绘 → 两行仍保持 selected", async () => {
+            await oev(`chrome.tabs.update(${T.act}, { active: true })`); await sleep(500);
+            const a = row("tA"), b = row("tB"); const pa = await rectOf(a), pb = await rectOf(b); if (!pa || !pb) return ["行不存在"];
+            await moveTo(pa.x, pa.y); await mouse(pa.x, pa.y, "left"); await sleep(500);
+            await modClick(pb.x, pb.y, 2); await sleep(500);
+            const s0 = (await probe(b))?.selected ?? [];
+            await ev(`window.__hrRef = document.querySelector(${JSON.stringify(b)}); window.__hrN = 0; window.__hrMO?.disconnect(); window.__hrMO = new MutationObserver(() => { window.__hrN++; }); window.__hrMO.observe(document.getElementById("app"), { childList: true, subtree: true }); 1`);
+            await rerender(); const p1 = await probe(b); const bad: string[] = [];
+            if (s0.length < 2) return [`夹具没选出 2 行：${JSON.stringify(s0)}`];
+            if (JSON.stringify(p1?.selected) !== JSON.stringify(s0)) bad.push(`重绘后选中集合 ${JSON.stringify(s0)} → ${JSON.stringify(p1?.selected)}`);
+            if (!p1?.hover) bad.push("悬停行 :hover 丢了");
+            await escape(); await away();
+            return bad;
+        });
+        await step("【悬停×重绘】收尾：关夹具标签、还原 storage、清 hover", 30_000, async () => {
+            await away(); await closeAll();
+            await oev(`(async () => { for (const id of ${JSON.stringify(Object.values(T).filter(x => x !== origTab))}) await chrome.tabs.remove(id).catch(() => { }); await chrome.tabs.update(${origTab}, { active: true }).catch(() => { }); return 1; })()`, 15000);
+            await oev(`(async () => { const s = ${JSON.stringify(savedHr)}; const rm = []; for (const k of ["data:favorites", "data:pinned", "data:spaces"]) { if (k in s) await chrome.storage.local.set({ [k]: s[k] }); else rm.push(k); } if (rm.length) await chrome.storage.local.remove(rm); return 1; })()`, 15000);
+            await sleep(1200); srv.stop(true);
+            fs.mkdirSync(HR_OUT, { recursive: true }); fs.writeFileSync(`${HR_OUT}/hoverrerender-results.json`, JSON.stringify(R, null, 1));
+            const fails = Object.entries(R).filter(([, v]) => v.bad?.length);
+            console.log(`  HR 汇总：${Object.keys(R).length} 个场景，${fails.length} 个有问题`); for (const [k, v] of fails) console.log("   ·", k, "→", v.bad.join(" ‖ ").slice(0, 400));
+        });
+    }
+    }
+
     if (PH.has("hover")) {
     // ===== 悬停保持（52015 实机：鼠标不动，标签行悬停态自己消失）：每类行 real-hover 后不再输入，5s / 15s 检查同一节点 + :hover =====
     {
@@ -1108,8 +1491,8 @@ try {
             if (p2.sh - p2.ch < 150) issues.push(`列表不可纵向滚动（scrollHeight ${p2.sh} / clientHeight ${p2.ch}），无法验证 scrollTop`);
             await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p2.x, y: p2.y }, S()); await sleep(250);
             await ev(`__w2Start()`); const top0 = p2.st;
-            const t0 = Date.now(); for (const e of sc.ev) { const w = t0 + e.at - Date.now(); if (w > 0) await sleep(w); await h.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: p2.x, y: p2.y, deltaX: e.dx, deltaY: e.dy }, S()); }
-            const sendMs = Date.now() - t0; await sleep(sc.settle);
+            const t0 = mono(); for (const e of sc.ev) { const w = t0 + e.at - mono(); if (w > 0) await sleep(w); await h.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: p2.x, y: p2.y, deltaX: e.dx, deltaY: e.dy }, S()); }
+            const sendMs = mono() - t0; await sleep(sc.settle);
             const R = await ev(`__w2Stop()`); const fr: any[] = R.frames;
             // 通用 1：tx 不许“非零 → 一帧回到 ≈0”（松手回弹必须带 .18s 过渡，不能单帧跳）
             let tswAt = -1; { let acc = 0; for (const w of R.wheels) { acc += w.dx; if (acc >= 120) { tswAt = w.t; break; } } } /* 切换那一刻 follow(0) 无过渡是故意的（接着 .arc-swipe-* 滑入动画） */
@@ -1151,9 +1534,9 @@ try {
                 await ev(`document.documentElement.scrollLeft = 0; document.body.scrollLeft = 0; 1`);
                 await h.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y }, S()); await sleep(250);
                 const before = await ev(`(() => { __wxStart(${JSON.stringify(WX)}); return { snap: __wxSnap(), scan: __wxScan(), fav: __wxFavSl() }; })()`);
-                const g = gesture(kind); const t0 = Date.now();
+                const g = gesture(kind); const t0 = mono();
                 for (const e of g) { await h.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, deltaX: e.dx, deltaY: e.dy }, S()); await sleep(kind === "osc" ? 12 : 30); }
-                const gestureMs = Date.now() - t0;
+                const gestureMs = mono() - t0;
                 const during = await ev(`({ scan: __wxScan(), fav: __wxFavSl() })`);
                 await sleep(700); // 静止：product 的 idle 回弹 160ms，之后应完全复位
                 const frames: any[] = await ev(`__wxStop()`); const after = await ev(`({ snap: __wxSnap(), scan: __wxScan(), fav: __wxFavSl() })`);
@@ -1309,8 +1692,8 @@ try {
         await step("【设置全扫】恢复原设置（storage.local + sync 整份快照）+ 插件启动状态与扫前一致", 20_000, async () => {
             await h.evalIn(opener!.sessionId, `(${orig} === null ? chrome.storage.local.remove("${KEY}") : chrome.storage.local.set({ "${KEY}": ${orig} })).then(() => 1)`);
             const r = await restoreAll(); console.log(`   全扫结束恢复存储：删 ${r.removed} / 改 ${r.changed} ${r.keys.join(", ")}`);
-            let now: string[] = []; const end = Date.now() + 10_000;
-            do { now = await startedNow(); if (JSON.stringify(now) === JSON.stringify(startedBefore)) break; await sleep(300); } while (Date.now() < end);
+            let now: string[] = []; const end = mono() + 10_000;
+            do { now = await startedNow(); if (JSON.stringify(now) === JSON.stringify(startedBefore)) break; await sleep(300); } while (mono() < end);
             const lost = startedBefore.filter(x => !now.includes(x)), extra = now.filter(x => !startedBefore.includes(x));
             if (lost.length || extra.length) throw new Error(`插件启动状态没恢复：扫前在跑而现在停了 ${JSON.stringify(lost)}；扫前没跑而现在在跑 ${JSON.stringify(extra)}`);
         }, { needPanel: false });
@@ -1321,6 +1704,16 @@ try {
     // ===== 自测页（selftest.html）=====
     /* 前面跑过真实侧栏阶段（core / clicks 会新建空间、标签、改“上一个标签”等运行态）时，自测页放进独立浏览器实例跑，拿干净 profile。
      * SELFTEST_ISOLATED=0 = 同实例跑（旧行为）；只跑自测页（SIDEPANEL=0）时本来就干净，直接同实例跑。 */
+    /* 补丁 rel66-postmessage-origin：真实网页 + 页内侧栏下没有 postMessage target origin 不匹配（独立实例：scripts/inpage-origin-cdp.ts；INPAGE_ORIGIN=0 跳过） */
+    if (process.env.INPAGE_ORIGIN !== "0" && !process.env.SWEEP_CHILD) await step("【页内 postMessage】真实网页上无 target origin 不匹配（独立实例）", 180_000, async () => {
+        const child = Bun.spawn(["bun", "run", "scripts/inpage-origin-cdp.ts"], { cwd: ROOT, env: { ...process.env, DIST }, stdout: "pipe", stderr: "pipe" });
+        const out = await new Response(child.stdout).text(); await child.exited;
+        const lines = out.split("\n");
+        for (const l of lines) if (/【页内 postMessage】|页内 postMessage 源不匹配|^PASS 共|^FAIL 共|^   !! /.test(l)) console.log("   [页内 postMessage] " + l.slice(0, 900));
+        const fails = lines.filter(l => /^FAIL 【页内 postMessage】/.test(l));
+        rows.push(...fails.map(l => ({ step: "页内 postMessage：" + l.replace(/^FAIL 【页内 postMessage】/, "").split(" | ")[0], ok: false, detail: l.slice(0, 1500) })));
+        if (child.exitCode !== 0 && !fails.length) throw new Error(`页内 postMessage 子进程退出码 ${child.exitCode}：${out.slice(-1500)}`);
+    }, { needPanel: false });
     const stIsolated = process.env.SELFTEST !== "0" && process.env.SIDEPANEL !== "0" && process.env.SELFTEST_ISOLATED !== "0" && !process.env.SWEEP_CHILD;
     if (stIsolated) await step("【自测页】在独立浏览器实例里跑（隔离 profile）", 1_300_000, async () => {
         const child = Bun.spawn(["bun", "run", "scripts/harness-cdp.ts"], { cwd: ROOT, env: { ...process.env, DIST, SWEEP_CHILD: "1", SWEEP: "0", SIDEPANEL: "0", PHASES: "none" }, stdout: "pipe", stderr: "pipe" });
@@ -1342,20 +1735,21 @@ try {
             // 自测会把别的标签切到前台：自测页进入后台后计时器会被节流（setTimeout 被拖到 1 分钟一次 → 看起来“卡死”）。让它始终按前台 / 有焦点运行
             await h.send("Emulation.setFocusEmulationEnabled", { enabled: true }, st.sessionId).catch(() => { });
             await h.send("Page.setWebLifecycleState", { state: "active" }, st.sessionId).catch(() => { });
+            stPage = st.sessionId;
         }, { needPanel: false });
-        let res: { name: string; status: string; detail: string }[] = [];
+        let res: { name: string; status: string; detail: string; at?: string }[] = [];
         await step("自测页跑完（单步 120s 无进展判卡死，总 20 分钟）", 1_200_000, async () => {
-            let lastN = -1, last = Date.now();
+            let lastN = -1, last = mono(), lastMark = clock.mark(); // rel45：无进展计时用单调时钟，并扣掉检测到的冻结时间（VM 快照 / 恢复）；wall-clock 跳变本身不再触发
             for (;;) {
                 await sleep(500);
                 if (String(await h.evalIn(st.sessionId, "document.title", { ms: 10_000 }).catch(() => "")).includes("完成")) break;
                 if (await h.evalIn(st.sessionId, "globalThis.__shot", { ms: 5000 }).catch(() => null)) await h.evalIn(st.sessionId, "globalThis.__shot = null").catch(() => { });
                 const n = Number(await h.evalIn(st.sessionId, "globalThis.__results?.length ?? 0", { ms: 10_000 }).catch(() => lastN));
-                if (n !== lastN) { lastN = n; last = Date.now(); }
-                else if (Date.now() - last > 120_000) {
+                if (n !== lastN) { lastN = n; last = mono(); lastMark = clock.mark(); setStage(`自测页进度 ${n}`); }
+                else if (clock.sample(), effectiveElapsed(mono() - last, clock.since(lastMark)) > 120_000) {
                     // 卡死：先把已有结果收回来（原先直接抛错 → res 为空 → 报“0 通过 / 0 失败”，看不出前面跑了什么）
                     res = await h.evalIn(st.sessionId, "globalThis.__results", { ms: 5000 }).catch(() => null) ?? [];
-                    throw new Error(`卡住 120s：正在跑「${await h.evalIn(st.sessionId, "globalThis.__current ?? '（不在任何测试内）'", { ms: 5000 }).catch(() => "?（页面无响应：主线程被占住 / 页面已关闭）")}」，上一项「${await h.evalIn(st.sessionId, "globalThis.__results?.at(-1)?.name ?? '（开头）'", { ms: 5000 }).catch(() => "?")}」`);
+                    throw new Error(`卡住 120s：正在跑「${await h.evalIn(st.sessionId, "globalThis.__current ?? '（不在任何测试内）'", { ms: 5000 }).catch(() => "?（页面无响应：主线程被占住 / 页面已关闭）")}」，上一项「${await h.evalIn(st.sessionId, "globalThis.__results?.at(-1)?.name ?? '（开头）'", { ms: 5000 }).catch(() => "?")}」 ‖ ${await timeoutDiag()}`);
                 }
             }
             res = await h.evalIn(st.sessionId, "globalThis.__results") ?? [];
@@ -1365,7 +1759,7 @@ try {
             const grp = new Map<string, number>(); for (const x of sc) { const k = x.ctx + " → " + String(x.message).slice(0, 120); grp.set(k, (grp.get(k) ?? 0) + 1); }
             console.log(`   自测页非致命 catch（stCatch，仅供参考）：${sc.length} 条` + [...grp].map(([k, n]) => `\n     · ${k}${n > 1 ? " ×" + n : ""}`).join(""));
         }, { needPanel: false });
-        for (const r of res) { const ok = r.status !== "fail"; rows.push({ step: "自测页：" + r.name, ok, detail: ok ? "" : r.detail.slice(0, 900) }); if (!ok) console.log("FAIL", "自测页：" + r.name, "|", r.detail.slice(0, 900)); else if (/WARN/.test(r.detail)) console.log("WARN", "自测页：" + r.name, "|", r.detail.slice(0, 900)); else if (/标签行提示/.test(r.name)) console.log("PASS", "自测页：" + r.name, "|", r.detail.slice(0, 400)); }
+        for (const r of res) { const ok = r.status !== "fail"; const at = r.at ? `[${r.at}] ` : ""; rows.push({ step: "自测页：" + r.name, ok, detail: ok ? (r.at ?? "") : (at + r.detail).slice(0, 900) }); if (!ok) console.log("FAIL", "自测页：" + r.name, "|", at + r.detail.slice(0, 900)); else if (/WARN/.test(r.detail)) console.log("WARN", "自测页：" + r.name, "|", at + r.detail.slice(0, 900)); else if (/标签行提示/.test(r.name)) console.log("PASS", "自测页：" + r.name, "|", at + r.detail.slice(0, 400)); }
         console.log(`自测页：${res.filter(r => r.status === "pass").length} 通过 / ${res.filter(r => r.status === "fail").length} 失败 / ${res.filter(r => r.status === "skip").length} 跳过`);
         if (process.env.ST_JSON) { (await import("fs")).writeFileSync(process.env.ST_JSON, JSON.stringify(res, null, 1)); console.log(`自测页逐项结果：${process.env.ST_JSON}`); }
     }
@@ -1377,6 +1771,7 @@ try {
     await step("收尾：arc-sidepanel-violations === []", 10_000, async () => { const v = await violations(); if (v.length) throw new Error(JSON.stringify(v).slice(0, 1500)); }, { needPanel: false });
     await step("收尾：全程无错误（chrome://extensions 完整列表）", 10_000, async () => { const all = (await h.extensionErrors()).filter(e => !expected(e)); if (all.length) throw new Error(all.map(fmtErr).join(" ‖ ")); }, { needPanel: false });
     (await import("fs")).writeFileSync("/tmp/harness-errors.json", JSON.stringify(allErrs, null, 1)); console.log("完整错误明细：/tmp/harness-errors.json");
+    { const c = clock.summary(); console.log(`[时钟] 本次运行：检测到时钟跳变 / 冻结 ${c.events} 次，wall−mono 漂移 ${c.skewMs}ms；因时钟事件重试的步骤：${jumpRetried.length ? jumpRetried.join("、") : "无"}${c.last.length ? "；最近：" + c.last.join("；") : ""}`); }
     const bad = rows.filter(r => !r.ok);
     console.log(bad.length ? `\nFAIL 共 ${rows.length} 步，${bad.length} 步失败：\n` + bad.map(r => " - " + r.step).join("\n") : `\nPASS 共 ${rows.length} 步，全部通过`);
     code = bad.length ? 1 : 0;

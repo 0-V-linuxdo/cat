@@ -9,7 +9,8 @@ const layout = (kind: string) => menus.match(new RegExp(`\\b${kind}: \\{([^}]*)\
 
 test("§1 标签菜单没有 Add to Favorites：MENU_LAYOUT.tab 无 fav", () => {
     expect(layout("tab")).not.toMatch(/\bfav:/);
-    expect(layout("tab")).not.toMatch(/\bpin:/);
+    // rel65 ②（用户 11/2 定）：Today 标签菜单加「Pin Tab」，组 6 Archive Tab 之前
+    expect(layout("tab")).toMatch(/\bpin: \[6, 59\], close: \[6, 60\]/);
 });
 test("§4 收藏菜单组 6 = Close Tab + Remove Favorite；固定区组 6 只有 Remove Pin", () => {
     expect(layout("favorite")).toContain("closeTab: [6, 60], remove: [6, 61]");

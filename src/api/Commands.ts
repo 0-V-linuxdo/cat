@@ -5,6 +5,7 @@
  */
 import { getContext } from "@api/context";
 import { flog } from "@api/FocusLog";
+import { isParkedHost } from "@api/HostMode";
 import { prettyCombo } from "@api/Keys";
 import { Logger } from "@utils/Logger";
 import { createRegistry } from "@api/registry";
@@ -88,6 +89,7 @@ export function serveCommands() {
     flog(getContext() === "background" ? "bg" : "panel", "cmd serve start");
     const listener = (msg: any, _s: chrome.runtime.MessageSender, respond: (r: unknown) => void) => {
         if (msg?.type !== CMD || msg.target !== getContext()) return;
+        if (isParkedHost()) return; // 补丁 tab-shake：停放的页内侧栏 iframe（后台标签留着备切回）不执行，由前台那一份响应
         const p = runServed(msg, "message");
         if (!p) { respond(null); return; }
         void p.then(r => respond(r ?? null));

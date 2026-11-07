@@ -130,9 +130,21 @@ export default /* css */ `
  * 副标题 alpha 0.5 淡入（单行尾截断，0.1s easeInEaseOut）、右按钮隐藏。副标题字号 / 位置 ⛔ 无数值 → 11px，紧贴标题下方。 */
 .arc-tab > .arc-tab-title { transition: transform .1s ease-in-out; }
 :root .arc-tab[data-hz="icon"] > .arc-tab-title { transform: translateY(-7px); }
-.arc-tab-sub { position: absolute; left: var(--arc-sub-left, 0); width: var(--arc-sub-width, auto); top: calc(50% - 7px + var(--arc-text-lh, 18px) / 2); height: 14px; line-height: 14px;
+.arc-tab-sub { position: absolute; left: var(--arc-sub-left, 0); right: 6px; /* ⑤ 右界 = 行内容右缘（行 padding-right 6）= 第一行右界；不再用 --arc-sub-width（图标区悬停时 −/✕ 不占位，两行都到最右；pinned-icon-hover.md：副标题 trailing ≤ bodyStack.trailing） */ top: calc(50% - 7px + var(--arc-text-lh, 18px) / 2); height: 14px; line-height: 14px;
   font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; opacity: 0; transition: opacity .1s ease-in-out;
-  color: color-mix(in srgb, var(--arc-row-fg, currentColor) 56%, transparent); /* ≈ alpha 0.5（行标题色本身 α.9；调色板颜色 ⛔） */ }
+  color: color-mix(in srgb, var(--arc-row-fg, currentColor) 50%, transparent); /* ⑥ 行文字色 × 0.5（Rea ✅：palette.title ×0.5；调色板色值本身 ⛔） */ }
 :root .arc-tab[data-hz="icon"] > .arc-tab-sub { opacity: 1; }
-:root .arc-tab[data-hz="icon"] .arc-tab-close { opacity: 0; pointer-events: none; }
+:root .arc-tab[data-hz="icon"] .arc-tab-close { opacity: 0; pointer-events: none; display: none; } /* rel47 ⑤：−/✕ 隐藏且不占位（Rea ⚠ detachesHiddenViews；第一行 / 第二行右界都延到行内容最右） */
+/* 图标区 region0 高亮块（pinned-icon-hover.md 结论 5 / §3，Rea ✅ 色值 / 圆角 / cornerMask；宽 36 ⚠ 推导值 = 2 × 图标容器 minX(10) + 16，源码只有公式 2×minX + 宽，没有常量）。
+ * region view = selectionStateView.bounds.insetBy(8,8) = 行卡片（Cat 的 .arc-tab 已是 8 外边距内的卡片，--arc-row-inset），region0 从卡片左缘起 → left 0、整行高。只在偏离行（canResetTab）的图标区悬停时出现（data-hz="icon" 即该条件）。
+ * hover 底色 SidebarItemBackground：浅 #0E0F10 α.05 / 深 #FAFBFF α.10；按下 TabCellBackgroundPressed：浅 #0E0F10 α.065 / 深 #FAFBFF α.065；圆角 12；cornerMask：普通行 0xF 四角圆，当前 / 选中行 5 只左两角圆（右侧直）。
+ * 深浅色用与 .arc-tab.selected 同一套判定（data-theme / prefers-color-scheme / Adaptive data-bb-dark），不硬编码。 */
+:root { --arc-hz-bg: rgb(14 15 16 / .05); --arc-hz-press: rgb(14 15 16 / .065); }
+:root[data-theme="dark"] { --arc-hz-bg: rgb(250 251 255 / .10); --arc-hz-press: rgb(250 251 255 / .065); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --arc-hz-bg: rgb(250 251 255 / .10); --arc-hz-press: rgb(250 251 255 / .065); } }
+:root[data-bb-dark="1"] { --arc-hz-bg: rgb(250 251 255 / .10); --arc-hz-press: rgb(250 251 255 / .065); } :root[data-bb-dark="0"] { --arc-hz-bg: rgb(14 15 16 / .05); --arc-hz-press: rgb(14 15 16 / .065); }
+:root .arc-tab[data-hz="icon"] { isolation: isolate; }
+:root .arc-tab[data-hz="icon"]::before { content: ""; position: absolute; z-index: -1; left: 0; top: 0; bottom: 0; width: 36px; border-radius: 12px; background: var(--arc-hz-bg); pointer-events: none; }
+:root .arc-tab[data-hz="icon"]:active::before { background: var(--arc-hz-press); }
+:root .arc-tab.active[data-hz="icon"]::before, :root .arc-tab.selected[data-hz="icon"]::before { border-radius: 12px 0 0 12px; }
 `;

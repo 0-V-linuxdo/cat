@@ -2,11 +2,16 @@
  * 颜色来源依次：① <meta name="theme-color">（按 media 区分浅 / 深色）② 顶部元素或 body 的背景色 ③ 回落到空间主题色。
  * 切换标签 / 导航时平滑过渡；按亮度自动切换文字与图标的浅 / 深。我们自己的实现。 */
 import { safe } from "@api/ErrorLog";
+import { unlessParked } from "@api/ParkGate";
+import { visibleInterval, whileActive } from "@api/ParkLife";
+import { currentWindow, currentWindowId } from "@api/HostMode";
 import { call, handle } from "@api/RPC";
 import { flog } from "@api/FocusLog";
 import { definePluginSettings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
+
+import "./i18n";
 
 const settings = definePluginSettings({
     source: {
@@ -74,10 +79,10 @@ function paint(color?: string) {
 export default definePlugin({
     name: "Adaptive",
     label: "plugin.adaptive.label",
-    icon: "sun",
     description: "plugin.adaptive.desc",
     authors: [Devs.ArcSidebar],
     tags: ["adaptive"],
+    featureTags: ["adaptive.tag.theme", "adaptive.tag.background", "adaptive.tag.text"],
     enabledByDefault: false, // Arc 没有自适应网页配色：额外功能默认关闭（audit-2026-10-16 A1）
     settings,
     background: {
@@ -103,7 +108,8 @@ export default definePlugin({
                 void safe(call("adaptive:color", c || null), "adaptive:color");
             };
             let t: ReturnType<typeof setTimeout> | undefined;
-            const soon = () => { clearTimeout(t); t = setTimeout(send, 120); };
+            let dirty = false; // 补丁 inpage-parked-timers-stop：隐藏期间的变化只记脏位（没人看的标签不取色），可见时立刻补取
+            const soon = () => { if (document.visibilityState === "hidden") { dirty = true; return; } clearTimeout(t); t = setTimeout(send, 120); };
             send();
             const mo = new MutationObserver(soon);
             mo.observe(document.head ?? document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["content", "media"] });
@@ -113,10 +119,10 @@ export default definePlugin({
             const mq = matchMedia("(prefers-color-scheme: dark)");
             mq.addEventListener("change", soon);
             addEventListener("load", soon); addEventListener("pageshow", soon); addEventListener("popstate", soon);
-            const vis = () => { if (document.visibilityState === "visible") { last = ""; soon(); } };
+            const vis = () => { if (document.visibilityState === "visible") { last = ""; if (dirty) { dirty = false; clearTimeout(t); send(); } else soon(); } };
             document.addEventListener("visibilitychange", vis);
-            const iv = setInterval(soon, 2500); // SPA 导航（pushState）没有事件
-            return () => { mo.disconnect(); mo2.disconnect(); mq.removeEventListener("change", soon); clearInterval(iv); clearTimeout(t); removeEventListener("load", soon); removeEventListener("pageshow", soon); removeEventListener("popstate", soon); document.removeEventListener("visibilitychange", vis); };
+            const iv = visibleInterval(soon, 2500); // SPA 导航（pushState）没有事件；补丁 inpage-parked-timers-stop：标签隐藏时真停表（clearInterval），可见时重启；侧栏用的颜色是 SW 里缓存的上一次取值（storage.session），切回首帧先用缓存，再补取一次
+            return () => { mo.disconnect(); mo2.disconnect(); mq.removeEventListener("change", soon); iv(); clearTimeout(t); removeEventListener("load", soon); removeEventListener("pageshow", soon); removeEventListener("popstate", soon); document.removeEventListener("visibilitychange", vis); };
         },
     },
     panel: {
@@ -127,16 +133,18 @@ export default definePlugin({
                 const v = (await chrome.storage.session.get(KEY(tabId)))[KEY(tabId)] as string | null | undefined;
                 paint(v || undefined);
             };
-            const onAct = (i: { tabId: number; windowId: number }) => void safe(chrome.windows.getCurrent().then(w => { if (i.windowId === w.id) { tabId = i.tabId; void refreshPaint(); } }), "windows.getCurrent");
-            const onSess = (ch: Record<string, chrome.storage.StorageChange>) => { if (tabId != null && KEY(tabId) in ch) void refreshPaint(); };
-            void safe(chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => { tabId = t?.id; void refreshPaint(); }), "tabs.query");
-            chrome.tabs.onActivated.addListener(onAct);
-            chrome.storage.session.onChanged.addListener(onSess);
+            const resync = () => void safe(currentWindowId().then(wid => chrome.tabs.query({ active: true, windowId: wid })).then(([t]) => { tabId = t?.id; void refreshPaint(); }), "tabs.query");
+            const onAct = (i: { tabId: number; windowId: number }) => void safe(currentWindow().then(w => { if (i.windowId === w.id) { tabId = i.tabId; unlessParked("adaptive.paint", () => void refreshPaint()); } }), "windows.getCurrent");
+            const onSess = (ch: Record<string, chrome.storage.StorageChange>) => { if (tabId != null && KEY(tabId) in ch) unlessParked("adaptive.paint", () => void refreshPaint()); }; // 补丁 inpage-parked-idle：停放时只记脏位，切回补一次
+            // currentWindow:true 在 iframe（页内侧栏）里语义不确定 ⚠：改为显式 windowId（原生侧栏下 = 原 currentWindow）
+            resync();
+            // 补丁 inpage-parked-timers-stop：停放且隐藏时摘掉监听（别的标签激活 / 每次取色写 storage.session 都会派发到每个停放 iframe）；切回重挂并 resync（重查活动标签 + 读缓存色）
+            const offLife = whileActive(() => { chrome.tabs.onActivated.addListener(onAct); chrome.storage.session.onChanged.addListener(onSess); }, () => { chrome.tabs.onActivated.removeListener(onAct); chrome.storage.session.onChanged.removeListener(onSess); }, resync);
             // 空间切换时主题插件会重写 data-theme：之后再盖一次
             const mo = new MutationObserver(() => { const a = document.documentElement.dataset.adaptive; if (a && document.documentElement.dataset.theme !== a) document.documentElement.dataset.theme = a; });
             mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
             const unsub = () => mo.disconnect();
-            return () => { chrome.tabs.onActivated.removeListener(onAct); chrome.storage.session.onChanged.removeListener(onSess); unsub(); paint(); };
+            return () => { offLife(); unsub(); paint(); };
         },
     },
 });

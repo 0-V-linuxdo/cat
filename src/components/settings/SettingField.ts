@@ -7,6 +7,7 @@ import { tr } from "@api/i18n";
 import { releasePluginPermissions, requestPluginPermissions } from "@api/PluginManager";
 import { h } from "@api/dom";
 import { Dropdown } from "@components/Menu";
+import { selectShown } from "./selectShown";
 import { dispatch } from "@api/Events";
 import { OptionType, type Plugin, type PluginSettingDef, type PluginSettingValue } from "@utils/types";
 
@@ -31,7 +32,7 @@ const FIELDS = {
         set(on);
     } }),
     [OptionType.SELECT]: (p, k, d, cur, set, dis) => {
-        const el = Dropdown({ options: d.options, value: cur, onChange: set, disabled: dis });
+        const el = Dropdown({ options: d.options, value: selectShown(d.options, cur), onChange: set, disabled: dis, tipShown: true });
         el.dataset.setting = `${p.name}.${k}`;
         return el;
     },
@@ -62,8 +63,9 @@ export function SettingField(p: Plugin, key: string, def: PluginSettingDef, onEr
     const disabled = !!check?.disabled?.call(ds);
     const { title, desc } = settingText(def, key);
     const kind = def.type === OptionType.BOOLEAN ? "toggle" : def.type === OptionType.SLIDER ? "slider" : def.type === OptionType.STRING && def.multiline ? "area" : "field";
+    const tip = settingTip(def.detail ? tr(def.detail) : "");
     return h("label", { class: `arc-setting${def.parent ? " arc-setting-sub" : ""}${def.featureToggle ? " arc-setting-feature" : ""}${disabled ? " is-disabled" : ""}`, "data-setting-row": `${p.name}.${key}`, "data-kind": kind },
-        h("span", { class: "arc-setting-text" },
+        h("span", { class: "arc-setting-text", "data-tip": tip.title || null, "data-tip-subtitle": tip.subtitle || null },
             h("span", { class: "arc-setting-title" }, title),
             desc ? h("span", { class: "arc-setting-desc" }, desc) : null),
         h("span", { class: "arc-setting-control" }, field(p, key, def, cur, set, disabled)));
@@ -103,6 +105,12 @@ export function SettingFields(p: Plugin, onError: (msg: string) => void) {
     /* 功能开关是设置项：改动后重绘，使依赖它的设置项（checks.disabled / 子设置）即时显示 / 隐藏 */
     box.addEventListener("change", () => queueMicrotask(() => { if (box.isConnected) box.replaceChildren(...build() as Node[]); }));
     return box;
+}
+
+/** 详细说明 → 悬停提示：第一行 = 标题，其余行（空格连接）= 副标题；ArcTooltip 两部分都是单行省略号，不会撑高设置行 */
+export function settingTip(detail: string): { title: string; subtitle: string } {
+    const lines = detail.split("\n").map(s => s.trim()).filter(s => s !== "");
+    return { title: lines.at(0) ?? "", subtitle: lines.slice(1).join(" ") };
 }
 
 const SEP = /^(.{1,24}?)(?:：|: )(.+)$/s;

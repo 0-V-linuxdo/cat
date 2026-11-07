@@ -7,9 +7,11 @@ import { keyFor } from "@api/Commands";
 import { displayUrl } from "@api/displayUrl";
 import "@components/ArcTooltip";
 import { safe } from "@api/ErrorLog";
+import { commandBarPopupQuery, ENSURE_BLUR_GRACE_MS, ensureNativeAck, inpageActiveFor, isInpageHost, lastEnsureNativeAt, navigateAfterNative, popupBlurAction } from "@api/HostMode";
 import { flog } from "@api/FocusLog";
 import { tr } from "@api/i18n";
 import { siteSearch } from "./siteSearch";
+import { createCommitter, gestureNow } from "./popupLogic";
 import { icon } from "@api/icons";
 import { commands, runCommand } from "@api/Commands";
 import { h } from "@api/dom";
@@ -27,7 +29,13 @@ import { activeTab, getWindowId } from "@plugins/_core/tabState";
 
 interface BarArg { replace?: boolean }
 
-const openTab = (url?: string) => chrome.tabs.create({ url, windowId: getWindowId(), active: true });
+/** ensured：调用方（go）已经自己先切过原生了，不要再发一次 */
+const openTab = (url?: string, o?: { ensured?: boolean }) => {
+    const create = () => chrome.tabs.create({ url, windowId: getWindowId(), active: true });
+    if (!url || o?.ensured) return create(); // 无 url（先开空白页再搜索）最终落在搜索结果页，不切
+    // 书签 / 历史 / 站点搜索 / 直接输入网址都经这里：目的地是受限页就先切原生，等 ack（最多 500 ms）再建标签（patch 07）
+    return Promise.resolve(navigateAfterNative(url, "create", undefined, create, { gestureAt: gestureNow() })); // patch 08：run 经 withGesture 同步调用，gestureAt = 回车 / 点击那一刻
+};
 
 function render(box: HTMLElement, arg: unknown, close: () => void) {
     const replace = !!(arg as BarArg | undefined)?.replace;
@@ -42,14 +50,21 @@ function render(box: HTMLElement, arg: unknown, close: () => void) {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const startUrl = input.value;
+    const committer = createCommitter(); // patch 08：回车 / 点行只提交一次（等 ack 的 ≤500 ms、stale 等待期间都不再接受第二次）
     const go = (q: string) => {
-        if (!q.trim()) return;
+        if (!q.trim()) { committer.release(); return; }
         // ⌘L 后不改网址直接回车 = 刷新
         if (replace && q === startUrl) { const t = activeTab(); if (t?.id != null) void safe(chrome.tabs.reload(t.id), "tabs.reload"); close(); return; }
         if (looksLikeUrl(q.trim())) {
             const url = toUrl(q.trim());
             const t = activeTab();
-            if (replace && t?.id != null) void safe(chrome.tabs.update(t.id, { url }), "tabs.update"); else void openTab(url);
+            const target = replace && t?.id != null ? t.id : undefined;
+            const nav = (): Promise<unknown> => target != null ? safe(chrome.tabs.update(target, { url }), "tabs.update") : safe(openTab(url, { ensured: true }), "tabs.create"); // 永不 reject：close 在它之后
+            // patch 07：先切原生并等 ack 再导航。等待期间**不能**先 close()：命令栏弹窗一关，页面脚本就没了，导航发不出去（所以只在发了消息时才推迟 close）
+            // patch 08：gestureAt = 回车 / 点击的时刻（stale 等待之后才走到这里）；导航**发出（promise 落定）之后**才 close，且失焦即关在 ensure 期间被延后（HostMode.popupBlurAction / pageBlurAction）
+            const ack = ensureNativeAck(url, target != null ? "navigate" : "create", target, { gestureAt: gestureNow() });
+            if (ack) { void ack.then(nav).then(close, close); return; }
+            void nav();
         } else {
             const t = activeTab();
             const p = replace && t?.id != null ? Promise.resolve(t.id) : openTab().then(n => n.id);
@@ -60,7 +75,7 @@ function render(box: HTMLElement, arg: unknown, close: () => void) {
     const paint = () => {
         list.replaceChildren(...results.map((r, i) => h("div", {
             class: `arc-list-row${i === sel ? " sel" : ""}`,
-            onclick: () => { void Promise.race([Promise.resolve(r.run()), new Promise(res => setTimeout(res, 1500))]).finally(() => setTimeout(close, 200)); },
+            onclick: () => { committer.press(Date.now(), () => { void Promise.race([Promise.resolve(r.run()), new Promise(res => setTimeout(res, 1500))]).finally(() => setTimeout(close, 200)); }); },
             onmousemove: () => { if (sel !== i) { sel = i; paint(); } },
         },
         r.icon ? h("img", { class: "arc-fav", src: r.icon, alt: "" }) : h("span", { class: "arc-fav" }, icon("search", 14)),
@@ -110,8 +125,9 @@ function render(box: HTMLElement, arg: unknown, close: () => void) {
         else if (up) { sel = Math.max(sel - 1, 0); paint(); e.preventDefault(); }
         else if (e.key === "Enter") {
             e.preventDefault();
-            if (stale) { const shift = e.shiftKey; void waitFresh().then(() => enter(shift)); return; }
-            enter(e.shiftKey);
+            // patch 08：手势时刻在 keydown 当下取；stale 时等最新一轮搜索之后才 enter，但仍按 keydown 的时刻算预算；已提交过（ack 等待中）的第二次回车直接忽略
+            const shift = e.shiftKey;
+            committer.press(Date.now(), () => enter(shift), stale ? waitFresh() : undefined);
         }
     });
     const enter = (shiftKey: boolean) => {
@@ -145,7 +161,7 @@ const providers = () => [
                 id: `tab:${t.id}`, title: t.title || displayUrl(t.url, "domain"), subtitle: tr("cmdbar.switchToTab"), icon: t.favIconUrl || faviconUrl(t.url),
                 // 当前空间的标签排在前面（同 Arc：建议随空间更新）
                 score: Math.max(fuzzyScore(q, t.title ?? ""), fuzzyScore(q, t.url ?? "") * 0.8) * ((spacesStore.get().tabSpace[t.id!] ?? spacesStore.get().activeId) === spacesStore.get().activeId ? 1.5 : 1),
-                run: async () => { await chrome.tabs.update(t.id!, { active: true }); await chrome.windows.update(t.windowId, { focused: true }); },
+                run: async () => { const ack = ensureNativeAck(t.url, "activate", t.id, { gestureAt: gestureNow() }); if (ack) await ack; /* patch 07：等 ack 再激活；patch 08：gestureAt = 回车 / 点击时刻（run 的同步段里读） */ await chrome.tabs.update(t.id!, { active: true }); await chrome.windows.update(t.windowId, { focused: true }); },
             }));
         },
     }),
@@ -176,21 +192,31 @@ const providers = () => [
 ];
 
 /** 居中的独立命令栏小窗（同 Arc 的 ⌘T / ⌘L）：侧边栏无法从网页抢键盘焦点，所以开一个居中 popup 窗口 */
-async function openCentered(windowId?: number, edit = false) {
+async function openCentered(windowId?: number, edit = false, viaInpage = false) {
     const win = windowId != null ? await chrome.windows.get(windowId) : await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    // patch 07：Alt+T / open-command-bar 全局命令没有 iframe 参与，调用方不会带 via；插件在 SW 里注册的探针（同步）回答「这个窗口当前是不是页内侧栏在用」。冷 SW（插件 start 还没跑）= 探针没装 = 不带 via（⚠ 降级）
+    viaInpage ||= inpageActiveFor(win.id);
     const width = 640, height = 460;
     const left = Math.round((win.left ?? 0) + ((win.width ?? width) - width) / 2);
     const top = Math.round((win.top ?? 0) + Math.max(60, ((win.height ?? height) - height) / 4));
-    const w = await chrome.windows.create({ url: chrome.runtime.getURL(`sidepanel.html?popup=commandBar&win=${win.id}${edit ? "&edit=1" : ""}`), type: "popup", width, height, left, top, focused: true });
+    const w = await chrome.windows.create({ url: chrome.runtime.getURL(`sidepanel.html?${commandBarPopupQuery(win.id, edit, viaInpage)}`), type: "popup", width, height, left, top, focused: true });
     if (w?.id == null) return;
     // 焦点去了任何别的窗口（包括 WINDOW_ID_NONE = 别的应用）→ 关闭；刚打开 500ms 内的不算
     const born = Date.now(), id = w.id;
-    const onFocus = (f: number) => {
-        flog("bg", `onFocusChanged ${f} (cmdbar ${id})`);
-        if (f === id || Date.now() - born < 500) return;
+    // patch 08：sidePanel.open（ensure-native）会让焦点离开弹窗，这时立刻关弹窗 = 弹窗页里 ack.then(导航) 丢失。ensure-native 刚发过（HostMode.noteEnsureNative，grace 内）= 不立刻关，延后复查一次：那时弹窗仍没拿回焦点才关
+    let lastFocus: number | undefined, deferred = false;
+    const closeIt = () => {
         chrome.windows.onFocusChanged.removeListener(onFocus);
         // 弹窗可能已自行关闭：「No window with id」属正常，不记日志
         chrome.windows.remove(id).catch((e: unknown) => { if (!/No window with id/.test(String((e as Error)?.message ?? e))) void safe(Promise.reject(e), "windows.remove"); });
+    };
+    const onFocus = (f: number) => {
+        flog("bg", `onFocusChanged ${f} (cmdbar ${id})`);
+        lastFocus = f;
+        const act = popupBlurAction({ focused: f, popupId: id, born, now: Date.now(), ensureAt: lastEnsureNativeAt() });
+        if (act === "ignore") return;
+        if (act === "defer") { if (!deferred) { deferred = true; setTimeout(() => { deferred = false; if (lastFocus !== id) closeIt(); }, ENSURE_BLUR_GRACE_MS); } return; }
+        closeIt();
     };
     const onRemoved = (r: number) => { if (r === id) { chrome.windows.onFocusChanged.removeListener(onFocus); chrome.windows.onRemoved.removeListener(onRemoved); } };
     chrome.windows.onFocusChanged.addListener(onFocus);
@@ -199,7 +225,7 @@ async function openCentered(windowId?: number, edit = false) {
 
 /** 新标签：设置为“居中小窗”时弹出居中命令栏，否则在侧边栏内打开 */
 export function newTabBar() {
-    if (settings.store.centered && !new URLSearchParams(location.search).get("popup")) return call("cmdbar:centered", getWindowId());
+    if (settings.store.centered && !new URLSearchParams(location.search).get("popup")) return call("cmdbar:centered", getWindowId(), false, isInpageHost()); // 第三个参数：从页内侧栏发起 → 弹窗带 via=inpage，弹窗里的导航也能先切原生
     openOverlay("commandBar");
 }
 
@@ -238,7 +264,7 @@ export default definePlugin({
     background: {
         start: () => [
             listen("commands.onCommand", (cmd, tab) => { if (cmd === "open-command-bar") void safe(openCentered(tab?.windowId), "cmdbar.openCentered"); }),
-            handle("cmdbar:centered", ([windowId, edit]) => safe(openCentered(windowId as number | undefined, !!edit), "cmdbar.openCentered")),
+            handle("cmdbar:centered", ([windowId, edit, via]) => safe(openCentered(windowId as number | undefined, !!edit, !!via), "cmdbar.openCentered")),
         ],
     },
     panel: {

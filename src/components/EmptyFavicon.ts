@@ -37,9 +37,27 @@ function sigOf(src: string): Promise<string> {
     }
     return p;
 }
+/* favicon-jitter：记住「这个 src 已确认是空 / 坏图」（error 或默认地球）。整屏重绘每次都新建 <img>，坏图每次都要重新请求、等 error 再换占位（空白 → 占位闪一下）；
+ * 记下后下一次重绘直接生成占位，不再发请求。TTL 到期后重试一次（站点后来补上了图标 / 临时网络错误能恢复），同时丢掉该 src 的地球签名缓存。 */
+const emptyAt = new Map<string, number>();
+export const EMPTY_TTL = 5 * 60_000;
+function markEmpty(src: string) { if (!src) return; if (emptyAt.size > 500) emptyAt.clear(); emptyAt.set(src, Date.now()); }
+export function knownEmpty(src: string, now = Date.now()): boolean {
+    const t = emptyAt.get(src);
+    if (t == null) return false;
+    if (now - t > EMPTY_TTL) { emptyAt.delete(src); sigCache.delete(src); return false; }
+    return true;
+}
+export const _resetKnownEmpty = () => { emptyAt.clear(); sigCache.clear(); };
+/** 行图标：已知空图 → 直接占位（带 extraClass）；否则带兜底的 <img> */
+export function favNode(src: string, cls: string, size = 14): Element {
+    if (knownEmpty(src)) { const e = emptyFavicon(size); for (const c of cls.split(/\s+/)) if (c) e.classList.add(c); return e; }
+    const img = document.createElement("img"); img.className = cls; img.setAttribute("src", src); img.setAttribute("alt", "");
+    return withEmptyFallback(img, size);
+}
 /** 给 favicon <img> 装上兜底：加载失败、或只是 _favicon 的默认地球 → 原位换成 emptyFavicon(size)（保留 class / data-tip 等属性由调用方决定） */
 export function withEmptyFallback(img: HTMLImageElement, size = 14): HTMLImageElement {
-    const swap = () => { if (!img.isConnected && !img.parentNode) { img.dataset.emptyFav = "1"; return; } const e = emptyFavicon(size); for (const c of Array.from(img.classList)) e.classList.add(c); copyTip(img, e); /* data-tip* 在 img 进文档时已被 applyTip 消费（属性没了）→ 从 ArcTooltip 登记的声明里复制，否则 svg 占位丢 tooltip */ img.replaceWith(e); };
+    const swap = () => { markEmpty(img.getAttribute("src") ?? ""); img.dataset.emptyFav = "1"; if (!img.isConnected && !img.parentNode) return; const e = emptyFavicon(size); for (const c of Array.from(img.classList)) e.classList.add(c); copyTip(img, e); /* data-tip* 在 img 进文档时已被 applyTip 消费（属性没了）→ 从 ArcTooltip 登记的声明里复制，否则 svg 占位丢 tooltip */ img.replaceWith(e); };
     img.addEventListener("error", swap, { once: true });
     const src = img.getAttribute("src") ?? "";
     if (src.includes("/_favicon/")) {

@@ -8,6 +8,11 @@ export const STRINGS = {
     en: {
         "plugin.boosts.label": "Boosts",
         "plugin.boosts.desc": "Restyle sites with colors, fonts, Zap and CSS",
+        "boosts.tag.colors": "Colors",
+        "boosts.tag.fonts": "Fonts",
+        "boosts.tag.zap": "Zap",
+        "boosts.tag.css": "CSS",
+        "boosts.tag.js": "JavaScript",
         "boosts.jsEnabled": "Custom JavaScript",
         "boosts.jsEnabled.desc": "Needs the userScripts permission",
         "boosts.title": "Boosts",
@@ -42,6 +47,11 @@ export const STRINGS = {
     zh: {
         "plugin.boosts.label": "Boosts",
         "plugin.boosts.desc": "用配色、字体、Zap 和 CSS 改造网站",
+        "boosts.tag.colors": "配色",
+        "boosts.tag.fonts": "字体",
+        "boosts.tag.zap": "Zap",
+        "boosts.tag.css": "CSS",
+        "boosts.tag.js": "JavaScript",
         "boosts.jsEnabled": "自定义 JavaScript",
         "boosts.jsEnabled.desc": "需要 userScripts 权限",
         "boosts.title": "Boosts",

@@ -5,6 +5,7 @@
 import { withEmptyFallback } from "@components/EmptyFavicon";
 import { displayUrl } from "@api/displayUrl";
 import { safe } from "@api/ErrorLog";
+import { navigateAfterNative } from "@api/HostMode";
 import { tr } from "@api/i18n";
 import { applyUrlTransforms } from "@api/UrlTransforms";
 import { quoteUrl } from "./quote";
@@ -51,6 +52,7 @@ export const dupMenuItem: MenuItemDef = {
     },
 };
 async function step(delta: number) {
+    const gestureAt = Date.now(); // 手势时间（patch 07）：目的地要等下面两次查询才知道，所以消息只能在 await 之后发；超过 E8 的 3 s 手势预算就降级（不发）
     const t = await current();
     if (!t) return;
     const sp = spacesStore.get();
@@ -58,7 +60,7 @@ async function step(delta: number) {
     const list = (await chrome.tabs.query({ windowId: t.windowId })).filter(x => (sp.tabSpace[x.id!] ?? sp.activeId) === mine);
     const i = list.findIndex(x => x.id === t.id);
     const next = list[(i + delta + list.length) % list.length];
-    if (next?.id != null) await chrome.tabs.update(next.id, { active: true });
+    if (next?.id != null) await navigateAfterNative(next.url, "activate", next.id, () => chrome.tabs.update(next.id!, { active: true }), { gestureAt }); // ⚠ 前面有 await（current / tabs.query，通常几十 ms）：目的地未知所以无法提前；E8 手势预算内才发，超过降级
 }
 
 /** 按侧边栏可见顺序列出条目（收藏 → 固定（含文件夹）→ 今日），供 ⌘1–9 与上 / 下一个使用 */
@@ -101,19 +103,22 @@ function moveToMenu(t: MenuTarget): MenuItemDef[] {
  * 看不到松开事件的页面（chrome:// 等）在最后一次按键后 RECENT_IDLE 毫秒自动确认。
  */
 export const RECENT_IDLE = 900;
-const recent = { open: false, list: [] as chrome.tabs.Tab[], sel: 0, held: 0, timer: undefined as ReturnType<typeof setTimeout> | undefined, paint: () => { }, loading: undefined as Promise<void> | undefined };
+// at = 最近一次「激活触发事件」（Q 的 keydown / 列表里的点击 / Enter）的时间；松开 Alt（keyup）不是激活触发事件，所以松开时的手势是上一次 keydown（patch 07）。ready = 列表已查好（此时 recentCommit 到发消息之间没有 await）
+const recent = { open: false, list: [] as chrome.tabs.Tab[], sel: 0, held: 0, at: 0, ready: false, timer: undefined as ReturnType<typeof setTimeout> | undefined, paint: () => { }, loading: undefined as Promise<void> | undefined };
 
 function recentReset() {
     clearTimeout(recent.timer);
-    Object.assign(recent, { open: false, list: [], sel: 0, timer: undefined, loading: undefined, paint: () => { } });
+    Object.assign(recent, { open: false, list: [], sel: 0, at: 0, ready: false, timer: undefined, loading: undefined, paint: () => { } });
 }
 
 async function recentStep(dir: 1 | -1) {
+    recent.at = Date.now();
     if (!recent.open) {
         recent.open = true;
         recent.loading = chrome.tabs.query({}).then(all => {
             recent.list = all.filter(t => !t.url?.startsWith(chrome.runtime.getURL(""))).toSorted((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0)).slice(0, 20);
             recent.sel = recent.list.length < 2 ? 0 : dir > 0 ? 1 : recent.list.length - 1;
+            recent.ready = true;
         });
         if (currentOverlay() !== "recentTabs") openOverlay("recentTabs");
         await recent.loading;
@@ -130,11 +135,13 @@ async function recentStep(dir: 1 | -1) {
 
 async function recentCommit() {
     if (!recent.open) return;
-    await recent.loading;
+    const gestureAt = recent.at;
+    if (!recent.ready) await recent.loading; // 正常情况下列表早已查好（打开时就查了），这里零 await；没查好才等（⚠ 此时手势预算照旧从最近一次 keydown 算起）
     const t = recent.list[recent.sel];
     recentReset();
     closeOverlay();
-    if (t?.id != null) await safe(chrome.tabs.update(t.id, { active: true }).then(() => chrome.windows.update(t.windowId, { focused: true })), "tabs.update+windows.update");
+    // patch 07：消息在第一个 await 之前发出（列表已就绪时）；Alt 按住超过 E8 的 3 s 手势预算再松开 = 降级（不发，直接切换，兜底 = 按钮 / 角标）
+    if (t?.id != null) await safe(Promise.resolve(navigateAfterNative(t.url, "activate", t.id, () => chrome.tabs.update(t.id!, { active: true }).then(() => chrome.windows.update(t.windowId, { focused: true })), { gestureAt })), "tabs.update+windows.update");
 }
 
 /** 有来源能报告“松开 Alt”：取消超时确认 */
@@ -142,13 +149,14 @@ function recentHeld() { recent.held = Date.now(); clearTimeout(recent.timer); }
 
 function renderRecent(box: HTMLElement, _arg: unknown, close: () => void) {
     const list = h("div", { class: "arc-list", "data-test": "recent-list" });
-    const go = (i: number) => { recent.sel = i; void recentCommit(); };
+    const go = (i: number) => { recent.sel = i; recent.at = Date.now(); void recentCommit(); }; // 点击是激活触发事件：手势时间 = 此刻（patch 07）
     recent.paint = () => list.replaceChildren(...recent.list.map((t, i) => h("div", { class: `arc-list-row${i === recent.sel ? " sel" : ""}`, "data-tab": t.id, onclick: () => go(i) },
         withEmptyFallback(h("img", { class: "arc-fav", src: t.favIconUrl || faviconUrl(t.url), alt: "" }) as HTMLImageElement), h("span", { class: "arc-tab-title" }, t.title || displayUrl(t.url)))));
     // 从命令栏 / 点击打开（不是 Alt+Q）：也建立一次会话，等用户选择，不自动确认
     if (!recent.open) { void recentStep(1).then(() => { clearTimeout(recent.timer); recent.held = Date.now(); }); }
     else recent.paint();
     const onKey = (e: KeyboardEvent) => {
+        recent.at = Date.now(); // keydown 是激活触发事件（patch 07）
         if (e.altKey) recentHeld();
         const n = recent.list.length; if (!n) return;
         if (e.key === "ArrowDown") { recent.sel = (recent.sel + 1) % n; recent.paint(); e.preventDefault(); }

@@ -5,6 +5,7 @@
  */
 import "@components/ArcTooltip";
 import { safe } from "@api/ErrorLog";
+import { navigateAfterNative, type NativeOpts } from "@api/HostMode";
 import { tr } from "@api/i18n";
 import { commands, runCommand, setKeyResolver } from "@api/Commands";
 import { h } from "@api/dom";
@@ -15,6 +16,9 @@ import { plugins } from "@api/PluginManager";
 import { createPluginStore } from "@api/Storage";
 import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
+
+/** 新建标签打开受限页（chrome:// / 扩展页 / 商店）：页内侧栏里先切到原生侧边栏再开（navigateAfterNative：同步发消息、等 ack 再建；只在页内上下文起作用）。await 之后的调用点用 gestureAt 按 E8 的 3 s 手势预算降级 */
+const createTab = (url: string | undefined, o?: NativeOpts) => safe(Promise.resolve(navigateAfterNative(url, "create", undefined, () => chrome.tabs.create({ url }), o)), "tabs.create"); // patch 07：先切原生，等 ack（最多 500 ms）再建；o.gestureAt = await 之后的调用点按手势预算降级
 
 /** commandId → 组合键（"" 表示禁用） */
 const keymap = createPluginStore<{ map: Record<string, string> }>("keymap", () => ({ map: {} }));
@@ -75,7 +79,7 @@ function render(box: HTMLElement) {
     };
     box.append(h("div", { class: "arc-row" },
         h("button", { class: "arc-btn", onclick: () => keymap.update(x => { x.map = {}; }) }, tr("common.restoreDefault")),
-        h("button", { class: "arc-btn", onclick: () => void safe(chrome.tabs.create({ url: "chrome://extensions/shortcuts" }), "tabs.create") }, tr("shortcuts.global"))), list);
+        h("button", { class: "arc-btn", onclick: () => void createTab("chrome://extensions/shortcuts") }, tr("shortcuts.global"))), list);
     draw();
     return [keymap.subscribe(draw), commands.store.subscribe(draw)];
 }

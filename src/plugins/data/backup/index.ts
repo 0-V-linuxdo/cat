@@ -14,8 +14,8 @@ import definePlugin from "@utils/types";
 import { tier } from "./tier";
 import { syncDown, syncUp } from "./sync";
 import { definePluginSettings, SETTINGS_KEY } from "@api/Settings";
-import { sensitiveSettingKeys } from "@api/PluginManager";
-import { OptionType } from "@utils/types";
+import { plugins as registry } from "@api/PluginManager";
+import { OptionType, type PluginDef } from "@utils/types";
 import { debounce } from "@utils/misc";
 
 const settings = definePluginSettings({
@@ -26,8 +26,17 @@ const ALARM = "arc-backup";
 const KEY = "backups";
 type Snap = { at: number; data: Record<string, unknown> };
 
+/** sensitive 设置项 [存储位置, 键]：插件自己的设置在 plugins[插件名]；功能（featureSettings）的设置现在在 plugins[所属插件]，
+ *  合并前的旧数据里在 plugins[功能名]（migrateFeaturesIntoPlugins 会把它搬进所属插件），两处都算——
+ *  否则旧快照 / 旧导出文件里 plugins.LiveFolders.token 恢复后会被迁移搬回 plugins.Tabs.token（补丁 livefolders-token-sensitive） */
+export function sensitiveKeysOf(list: Iterable<PluginDef>): [string, string][] {
+    const out: [string, string][] = [];
+    for (const p of list) for (const [k, d] of Object.entries(p.settings?.def ?? {})) if ((d as { sensitive?: boolean }).sensitive) out.push([p.name, k]);
+    return out;
+}
+export const allSensitiveKeys = () => sensitiveKeysOf(Object.values(registry));
 /** 去掉 sensitive 设置项（不进导出 / 备份） */
-export function stripSensitive(all: Record<string, unknown>, keys = sensitiveSettingKeys()) {
+export function stripSensitive(all: Record<string, unknown>, keys = allSensitiveKeys()) {
     const s = all[SETTINGS_KEY] as { plugins?: Record<string, Record<string, unknown>> } | undefined;
     if (!s?.plugins || !keys.length) return all;
     const plugins = { ...s.plugins };
@@ -35,7 +44,7 @@ export function stripSensitive(all: Record<string, unknown>, keys = sensitiveSet
     return { ...all, [SETTINGS_KEY]: { ...s, plugins } };
 }
 /** 导入时 sensitive 设置项沿用当前值（导入文件里有也忽略） */
-export function keepSensitive(data: Record<string, unknown>, current: Record<string, unknown>, keys = sensitiveSettingKeys()) {
+export function keepSensitive(data: Record<string, unknown>, current: Record<string, unknown>, keys = allSensitiveKeys()) {
     const cur = (current[SETTINGS_KEY] as { plugins?: Record<string, Record<string, unknown>> } | undefined)?.plugins ?? {};
     const out = stripSensitive(data, keys);
     const s = out[SETTINGS_KEY] as { plugins?: Record<string, Record<string, unknown>> } | undefined;
@@ -47,6 +56,19 @@ export function keepSensitive(data: Record<string, unknown>, current: Record<str
 /** secret:* 键（API 密钥等）永不进导出 / 快照 / 导入（core-api-proposal「sensitive data」） */
 export const isSecretKey = (k: string) => k.startsWith("secret:");
 export function stripSecrets(all: Record<string, unknown>) { return Object.fromEntries(Object.entries(all).filter(([k]) => !isSecretKey(k))); }
+/** 快照列表逐份去掉 secret:* 与 sensitive 字段（旧快照是在某项标 sensitive 之前拍的，里面可能还有明文） */
+export function scrubSnaps(list: Snap[], keys = allSensitiveKeys()): Snap[] {
+    return list.map(s => s?.data && typeof s.data === "object" ? { ...s, data: stripSensitive(stripSecrets(s.data), keys) } : s);
+}
+/** 清洗已存的快照：幂等，没有变化就不写存储；返回是否改写了 */
+export async function scrubStoredSnapshots(keys = allSensitiveKeys()): Promise<boolean> {
+    const { [KEY]: list } = await chrome.storage.local.get(KEY) as { backups?: Snap[] };
+    if (!Array.isArray(list) || !list.length) return false;
+    const next = scrubSnaps(list, keys);
+    if (JSON.stringify(next) === JSON.stringify(list)) return false;
+    await chrome.storage.local.set({ [KEY]: next });
+    return true;
+}
 export async function dump() {
     const all = await chrome.storage.local.get(null);
     delete all[KEY];
@@ -56,7 +78,7 @@ async function snapshot() {
     const data = await dump(); // 已去掉 secret:* 与 sensitive 字段
     const { [KEY]: list = [] } = await chrome.storage.local.get(KEY) as { backups?: Snap[] };
     list.unshift({ at: Date.now(), data });
-    await chrome.storage.local.set({ [KEY]: tier(list.map(s => ({ ...s, data: stripSecrets(s.data) }))) }); // 旧快照里的 secret:* 一并清掉
+    await chrome.storage.local.set({ [KEY]: tier(scrubSnaps(list)) }); // 旧快照里的 secret:* 与 sensitive 字段一并清掉
 }
 export async function restore(data: Record<string, unknown>) {
     const keep = await chrome.storage.local.get(KEY);
@@ -114,6 +136,8 @@ export default definePlugin({
             const up = debounce(() => { if (settings.store.autoSync) void syncUp().catch(e => console.warn("sync", e)); }, 30000);
             const onCh = (c: Record<string, chrome.storage.StorageChange>, area: string) => { if (area === "local" && ["data:spaces", "data:pinned", "data:favorites"].some(k => k in c)) up(); };
             chrome.storage.onChanged.addListener(onCh);
+            // 升级后清洗一次旧快照里的 sensitive 字段（如 LiveFolders 令牌）；幂等，已干净就不写
+            void safe(scrubStoredSnapshots(), "backup.scrubSnapshots");
             return [() => void safe(chrome.alarms.clear(ALARM), "alarms.clear"), () => chrome.storage.onChanged.removeListener(onCh), listen("alarms.onAlarm", a => { if (a.name === ALARM) void snapshot(); })];
         },
     },

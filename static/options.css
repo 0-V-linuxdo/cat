@@ -38,6 +38,7 @@ body.arc-options :focus-visible { outline: 2px solid var(--opt-focus); outline-o
 .arc-opt-nav { display: flex; flex-direction: column; gap: 2px; }
 .arc-opt-nav-title { color: var(--opt-faint); font-size: 11.5px; font-weight: 500; padding: 10px 10px 6px; }
 .arc-opt-nav-item { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--opt-fg); text-align: left; cursor: default; font-size: 13px; }
+.arc-opt-nav-icon { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; } /* ⛔ 16 = 原 icon() 默认盒；SF 字形宽度各不同，固定盒让两行文字起点对齐 */
 .arc-opt-nav-item .arc-svg { color: var(--opt-muted); flex: none; }
 .arc-opt-nav-item:hover { background: var(--opt-hover); }
 .arc-opt-nav-item.active { background: var(--opt-sel); font-weight: 500; }
@@ -128,6 +129,14 @@ body.arc-options :focus-visible { outline: 2px solid var(--opt-focus); outline-o
 .arc-opt-filterbar .arc-opt-search { flex: 1; margin: 0; }
 .arc-opt-filterbar .arc-dropdown { width: 140px; flex: none; }
 .arc-opt-list { display: flex; flex-direction: column; gap: 16px; }
+/* 分类栏 = Void++ PluginsTab.css 31-55（.void-plugins-tabs / -tab / -tab-active）：flex、wrap、gap 0.125rem、底部 1px 线；选中色 + ::after 下划线（inset-inline 0.5rem、bottom -1px、高 2px、圆角 1px）。
+ * 色 → Cat 令牌：--border-l1 → --opt-line、--fg-secondary → --opt-muted、--fg-primary → --opt-fg。
+ * ⛔ 无 Void++ 来源：按钮高 / 内边距 / 字号 / 圆角 / 悬停（Void++ 里是 Grok 的 Button tertiary sm，源码不在仓库）——取 Cat 现有控件值（32px / 13px / 8px / --opt-hover），内边距 8px 取自下划线 inset 0.5rem（下划线与文字等宽） */
+.arc-opt-cats { display: flex; flex-wrap: wrap; gap: 2px; margin: 0 0 16px; border-bottom: 1px solid var(--opt-line); }
+.arc-opt-cat { position: relative; height: 32px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--opt-muted); font-size: 13px; cursor: default; }
+.arc-opt-cat:hover { background: var(--opt-hover); }
+.arc-opt-cat.active { color: var(--opt-fg); }
+.arc-opt-cat.active::after { content: ""; position: absolute; inset-inline: 8px; bottom: -1px; height: 2px; border-radius: 1px; background: var(--opt-fg); }
 .arc-opt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .arc-opt-sep { border: 0; height: 1px; background: var(--opt-line); margin: 0; }
 .arc-vcard { display: flex; flex-direction: column; min-height: 120px; min-width: 0; border-radius: 8px; border: 1px solid var(--opt-line); background: var(--opt-card); box-shadow: var(--opt-shadow); overflow: hidden; }
@@ -149,7 +158,9 @@ body.arc-options :focus-visible { outline: 2px solid var(--opt-focus); outline-o
 .arc-opt-reload { display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin-bottom: 20px; border-radius: 8px; font-size: 12.5px;
   color: var(--opt-fg); background: color-mix(in srgb, #d9a400 12%, var(--opt-card)); border: 1px solid color-mix(in srgb, #d9a400 40%, transparent); }
 .arc-opt-reload span { flex: 1; }
-.arc-vdialog-scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgb(0 0 0 / .28); }
+/* 层级：遮罩必须低于菜单（sidepanel.css .arc-menu = 20）：下拉框的菜单是 <body> 直接子元素，原 z-index 50 把它整个盖在对话框后面（见 src/utils/zLayers.ts）。值 = Z.dialog，tests/zLayersDialog.test.ts 断言一致 */
+:root { --arc-z-dialog: 15; }
+.arc-vdialog-scrim { position: fixed; inset: 0; z-index: var(--arc-z-dialog); display: grid; place-items: center; background: rgb(0 0 0 / .28); }
 .arc-vdialog { width: min(560px, calc(100vw - 48px)); max-height: calc(100vh - 80px); display: flex; flex-direction: column; gap: 14px; padding: 18px 20px; border-radius: 12px;
   background: var(--opt-card); color: var(--opt-fg); border: 1px solid var(--opt-line-strong); box-shadow: 0 1px 0 rgb(255 255 255 / .04) inset, 0 16px 40px rgb(0 0 0 / .22); }
 .arc-vdialog-head { display: flex; align-items: flex-start; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--opt-line); }
@@ -164,6 +175,8 @@ body.arc-options :focus-visible { outline: 2px solid var(--opt-focus); outline-o
 .arc-opt-pagehead { display: flex; align-items: center; gap: 12px; }
 .arc-opt-pagehead h1 { flex: 1; }
 .arc-vcard-icon { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; flex: none; color: var(--opt-fg); background: var(--opt-sel); }
+/* Library 卡片的 BoxOfThings：原尺寸 16×16（资源 @1x 像素当 px），其它图标是 14 盒 → 缩到 14/16 使视觉大小一致。⛔ 调整值，非 Arc 取值（Arc 没有统一尺寸，plugin-icons.md §3） */
+.arc-vcard-icon .arc-boxthings { transform: scale(.875); }
 .arc-vdialog-settings .arc-setting-group + .arc-setting-group { border-top: 1px solid var(--opt-line); padding-top: 8px; margin-top: 4px; }
 .arc-vdialog-settings .arc-setting-caption { font-weight: 600; color: var(--opt-fg); font-size: 12.5px; }
 

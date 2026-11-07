@@ -48,10 +48,12 @@ test("D-01：文件夹图标 = FolderIconView 代码绘制复刻（两层 SVG �
     expect(g.dataset.open).toBe("true");
 });
 
-test("I-01：手写 PATHS 只剩 sparkles（⛔）；scanText = SF text.viewfinder（⛔ suggestion）；views 指向 Arc 原生 splitCols；别名只剩 command / views", () => {
+test("I-01：整个侧边栏没有手绘图标（PATHS 全是 \"\"，sparkles 已换成 SF 字形 ⛔）；scanText = SF text.viewfinder（⛔ suggestion）；views 指向 Arc 原生 splitCols；别名只剩 command / views", () => {
     const paths = icons.slice(icons.indexOf("const PATHS = {"), icons.indexOf("} as const;", icons.indexOf("const PATHS = {")));
     const drawn = [...paths.matchAll(/^\s+(\w+): "([^"]+)"/gm)].map(m => m[1]);
-    expect(drawn).toEqual(["sparkles"]);
+    expect(drawn).toEqual([]); // 没有手绘图标：所有名字都由 Arc 资源 / SF 字形提供
+    expect(/^\s+\w+: "[^"]+"/m.test(paths)).toBe(false);
+    expect(icons).not.toMatch(/sparkles: "M7 2\.5/);
     expect(paths).not.toContain("cards:");
     expect(ion).toMatch(/\/\/ ⛔ 源码未找到（suggestion）[^\n]*text\.viewfinder[^\n]*\n\s+scanText: \{ src: "arc-icons\/sf\/suggested\/text\.viewfinder_17pt_regular\.svg"/);
     expect(r("src/api/arcIcons.ts")).toContain('"splitCols": "vector/ARC_SidebarPlusButton.bundle/split-add-right.svg"');

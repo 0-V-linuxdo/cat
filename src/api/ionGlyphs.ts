@@ -2,7 +2,7 @@
  * 格式与 icons.ts SF_GLYPHS 相同：原样拷贝 viewBox 与 path（fill=currentColor）；w/h 为该字号下的字形包围盒（pt），icon() 按 size/pt 等比缩放。勿手改字形。
  * 依据分级（每条注释注明）：A = Arc 同一界面位置有源码依据；B = 同义、不同界面；⛔ 源码未找到（suggestion）= Rea 建议的 SF 名，不是 Arc 取值。
  * 文件名 / 导出名 ION_GLYPHS 保留（自测、调用方按名字取用，名字不变）。arrowUp / folderOpen / leave / history 无调用处，已删除（ionicons-to-arc.md L3）。
- * sparkles 仍是 icons.ts 里的手写路径：⛔ 源码未找到（SF sparkles 未导出）。 */
+ * sparkles 在 icons.ts 的 SF_GLYPHS（SF `sparkles` 16pt Regular，⛔ 源码未找到）；手写路径已全部删除。 */
 export const ION_GLYPHS = {
     // A 同处：Library 返回 = SF arrow.left，Medium；字号 ⛔（TranslucentButton 工厂内部决定）。AnyPage @0x102798520（ionicons-to-arc.md L14）
     arrowLeft: { src: "arc-icons/sf/unsized/arrow.left_16pt_medium.svg", pt: 16, w: 14.773, h: 12.094, vb: "255 -1497 1891 1548", body: "<path transform=\"scale(1,-1)\" fill=\"currentColor\" d=\"M1028 -51C1090 -51 1136 -7 1136 53C1136 84 1123 112 1103 131L879 358L481 723L879 1088L1103 1315C1123 1335 1136 1362 1136 1393C1136 1453 1090 1497 1028 1497C1000 1497 974 1486 949 1461L291 804C268 782 255 753 255 723C255 693 268 664 291 642L951 -16C975 -39 1001 -50 1029 -50ZM818 615H2035C2101 615 2146 660 2146 724C2146 788 2101 833 2035 833H818L472 813C418 813 382 777 382 724C382 671 418 635 472 635Z\"/>" },

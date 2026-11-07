@@ -4,6 +4,7 @@
 import { call } from "@api/RPC";
 import { tr } from "@api/i18n";
 import { ZAP_BORDER, ZAP_PREVIEW_BG } from "./model";
+import { PAGE_Z_MAX } from "@utils/zLayers";
 import { selectorForRelated, selectorForThis, type ElLike } from "./selector";
 
 export const ZAP_MSG = "cat-boost:zap";
@@ -21,7 +22,7 @@ export function startZap(boostId: string) {
     const host = document.createElement("div");
     host.id = ROOT;
     const shadow = host.attachShadow({ mode: "closed" });
-    const fixed = "position:fixed;pointer-events:none;z-index:2147483647;";
+    const fixed = `position:fixed;pointer-events:none;z-index:${PAGE_Z_MAX};`;
     const frame = Object.assign(document.createElement("div"), { style: `${fixed}inset:0;border:${ZAP_BORDER}px solid ${BORDER_COLOR};` });
     const preview = Object.assign(document.createElement("div"), { style: `${fixed}background:${ZAP_PREVIEW_BG};display:none;` });
     const hint = Object.assign(document.createElement("div"), { style: `${fixed}top:12px;left:50%;transform:translateX(-50%);background:Canvas;color:CanvasText;font:13px system-ui;padding:6px 10px;border-radius:8px;`, textContent: tr("boosts.zapHint") });
@@ -57,7 +58,7 @@ export function startZap(boostId: string) {
         e.preventDefault(); e.stopPropagation(); closeMenu();
         const el = target as unknown as ElLike;
         const related = selectorForRelated(el, count);
-        menu = Object.assign(document.createElement("div"), { style: `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:2147483647;background:Canvas;color:CanvasText;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);font:13px system-ui;padding:4px;` });
+        menu = Object.assign(document.createElement("div"), { style: `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:${PAGE_Z_MAX};background:Canvas;color:CanvasText;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);font:13px system-ui;padding:4px;` });
         const item = (label: string, run: () => void, disabled = false) => {
             const b = Object.assign(document.createElement("button"), { textContent: tr(label), disabled, style: "display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;border-radius:5px;font:inherit;cursor:default;" });
             b.onclick = ev => { ev.stopPropagation(); run(); closeMenu(); };

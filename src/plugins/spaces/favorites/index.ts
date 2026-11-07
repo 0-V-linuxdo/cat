@@ -4,6 +4,8 @@
  */
 import { safe } from "@api/ErrorLog";
 import { onTabIdRemap } from "@api/TabIdRemap";
+import { listen } from "@api/ChromeEvents";
+import { clearClosedTabId, shouldClearOnRemoved } from "@plugins/tabs/pinnedTabs/closedTab";
 import { floatingEdit } from "@components/TabRow";
 import { arcRename } from "@components/Dialog";
 import { openIconPicker } from "@components/IconPicker";
@@ -140,17 +142,25 @@ function favTile(src: string): HTMLElement[] {
 }
 
 /** 网格左右边对齐地址栏、按 Rea 规则算列数（favorites-grid.md §2–3；数值注释见 spaces/style.ts .arc-fav-grid） */
+/* rel42 hover-rerender：指针停在收藏格上时整屏重绘，keepHover 保留旧网格并按新网格同步属性（syncAttrs）——新网格还没进文档、fit() 量不到，
+ * style 为空 → 旧网格的 --fav-cols / --fav-pl / --fav-pr 被摘光（实测 2 列 → 4 列，直到下次窗口尺寸变化才恢复）。
+ * 做法：记住上次量到的值，新网格创建时先写上（列数按本次项数重算），syncAttrs 搬过去的就是正确值。 */
+let lastFit: { pl: number; pr: number; avail: number } | null = null;
 function alignGrid(grid: HTMLElement, n: number): () => void {
+    const set = (k: string, v: string) => { if (grid.style.getPropertyValue(k) !== v) grid.style.setProperty(k, v); };
+    const apply = (f: { pl: number; pr: number; avail: number }) => {
+        set("--fav-pl", `${f.pl}px`); set("--fav-pr", `${f.pr}px`);
+        set("--fav-cols", String(Math.max(1, Math.min(n || 1, 4, Math.floor((f.avail + 8) / 55)))));
+    };
+    if (lastFit) apply(lastFit);
     const fit = () => {
         if (!grid.isConnected) return;
         const g = grid.getBoundingClientRect();
+        if (g.width <= 0) return;
         const u = document.querySelector<HTMLElement>(".arc-urlbar")?.getBoundingClientRect();
         const on = !!u && u.width > 0;
         const pl = on ? Math.max(0, u.left - g.left) : 0, pr = on ? Math.max(0, g.right - u.right) : 0;
-        const set = (k: string, v: string) => { if (grid.style.getPropertyValue(k) !== v) grid.style.setProperty(k, v); };
-        set("--fav-pl", `${pl}px`); set("--fav-pr", `${pr}px`);
-        const avail = g.width - pl - pr;
-        set("--fav-cols", String(Math.max(1, Math.min(n || 1, 4, Math.floor((avail + 8) / 55)))));
+        apply(lastFit = { pl, pr, avail: g.width - pl - pr });
     };
     /* 52187：RO 回调里同步写 --fav-cols 会改网格高度 → "ResizeObserver loop completed"。回调只排一个合并的 rAF；值未变不写（set 内比较）。首帧仍同步 fit() 一次（挂载时，不在 RO 回调里）。 */
     let raf = 0;
@@ -222,6 +232,11 @@ export default definePlugin({
             // 标签换 id：收藏跟到新 id
             onTabIdRemap(map => { if (!favStore.get().items.some(f => f.tabId != null && map.has(f.tabId))) return; return favStore.update(x => { for (const f of x.items) if (f.tabId != null && map.has(f.tabId)) f.tabId = map.get(f.tabId); }); }),
             addClaimProvider("Favorites", () => favStore.get().items.flatMap(f => f.tabId != null ? [f.tabId] : [])),
+            // 补丁 rel63-fav-reattach（b）：收藏绑定的标签被关掉 → 清 tabId（回到未打开），不再留死 id 让 reattachByUrl 按网址吞并无关标签；窗口整个关闭不清
+            listen("tabs.onRemoved", (id, info) => {
+                if (!shouldClearOnRemoved(info) || !favStore.get().items.some(f => f.tabId === id)) return;
+                void favStore.update(x => { clearClosedTabId(x.items, id); });
+            }),
         ],
     },
     panel: {
@@ -242,6 +257,8 @@ export default definePlugin({
                                 oncontextmenu: (e: MouseEvent) => showContextMenu(e, "favorite", { itemId: f.id, url: f.url, tabId: f.tabId, title: favTitle(f, tab) }),
                                 ondragstart: (e: DragEvent) => e.dataTransfer!.setData("text/arc-item", `fav:${f.id}`),
                                 "data-fav": f.id,
+                                // 补丁 t903u-tab-switch v2：已打开 = 按 tab.url 判（空 = 判不出 → 预热照发）；未打开 = 按收藏 URL 判
+                                "data-pw-target": "fav", "data-pw-tab": tab?.id != null ? String(tab.id) : null, "data-pw-tab-url": tab?.id != null ? (tab.url || tab.pendingUrl || "") : null, "data-pw-url": f.url || null,
                                 ondragover: (e: DragEvent) => e.preventDefault(),
                                 // 收藏之间拖动排序：放在目标左半边 = 之前，右半边 = 之后
                                 ondrop: (e: DragEvent) => {

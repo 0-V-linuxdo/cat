@@ -9,6 +9,7 @@ import { handle } from "@api/RPC";
 import { tr } from "@api/i18n";
 import { definePluginSettings } from "@api/Settings";
 import { Devs } from "@utils/constants";
+import { downloadOwn } from "@utils/ownDownload";
 import definePlugin, { OptionType } from "@utils/types";
 
 import "./i18n";
@@ -50,10 +51,10 @@ function captureVisible(windowId: number): Promise<string> {
 export default definePlugin({
     name: "Capture",
     label: "plugin.capture.label",
-    icon: "photo",
     description: "plugin.capture.desc",
     authors: [Devs.ArcSidebar],
     tags: ["views"],
+    featureTags: ["capture.tag.region", "capture.tag.element", "capture.tag.fullPage", "capture.tag.portrait", "capture.tag.image"],
     settings,
     commands: [
         { id: "capture.start", label: "capture.start", keywords: ["capture", "screenshot"], context: "background", defaultKey: "Mod+Shift+2", run: () => sendStart(undefined, "select") },
@@ -70,13 +71,13 @@ export default definePlugin({
                 }),
                 handle("capture.visible", (_a, sender) => sender.tab?.windowId != null ? captureVisible(sender.tab.windowId) : Promise.reject(new Error("no tab"))),
                 handle("capture.download", ([url, filename, saveAs]) => typeof url === "string" && url.startsWith("data:image/") && typeof filename === "string"
-                    ? chrome.downloads.download({ url, filename, saveAs: !!saveAs, conflictAction: "uniquify" }) : undefined),
+                    ? downloadOwn({ url, filename, saveAs: !!saveAs, conflictAction: "uniquify" }) : undefined), // downloadOwn：DownloadRename 开启时保住 filename（@utils/ownDownload）
                 // 返回字符串 id（核心 Media 接口）或数字 id（降级：downloads）
                 handle("capture.saveToLibrary", async ([url, filename], sender) => {
                     if (typeof url !== "string" || !url.startsWith("data:image/") || typeof filename !== "string") return null;
                     const viaCore = storeLibraryCapture({ id: crypto.randomUUID(), dataUrl: url, sourceURL: sender.tab?.url ?? "", title: sender.tab?.title ?? "", faviconURL: sender.tab?.favIconUrl, dateCreated: Date.now(), captureType: "partialPage" });
                     if (viaCore) return viaCore;
-                    return chrome.downloads.download({ url, filename: `${LIB_DIR}/${filename}`, saveAs: false, conflictAction: "uniquify" });
+                    return downloadOwn({ url, filename: `${LIB_DIR}/${filename}`, saveAs: false, conflictAction: "uniquify" }); // 含 Captures/ 子目录
                 }),
                 handle("capture.removeFromLibrary", async ([id]) => {
                     if (typeof id === "string") { await deleteLibraryCapture(id); return; }

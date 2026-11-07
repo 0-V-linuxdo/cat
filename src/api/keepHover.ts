@@ -17,6 +17,9 @@ export function recordListeners<T>(fn: () => T): T {
     try { return fn(); } finally { proto.addEventListener = orig; }
 }
 
+/** 悬停中的行被 morphInto 就地同步完后派发：行上由 JS 运行时写的悬停态（data-hz 等）被 syncAttrs 摘掉了，让行按最近的指针位置自己重判 */
+export const REHOVER = "arc-rehover";
+
 const rowKey = (e: Element) => e.getAttribute("data-sel") ?? e.getAttribute("data-folder");
 const keyOf = (e: Element) => e.getAttribute("data-sel") ?? e.getAttribute("data-test");
 /** 本模块不碰的属性：ArcTooltip 自己维护（data-tip 已被转走、aria-label 由它补） */
@@ -41,8 +44,8 @@ function syncAttrs(old: Element, nu: Element) {
 /** 把 nu 的内容就地并入 old（old 保留身份）；子节点同标签 / 同 key 时递归保留，否则换新 */
 const ROW = "[data-sel], [data-folder], .arc-row, .arc-folder-head, .arc-fav-tile";
 const POPUP = "[aria-haspopup], .arc-menu";
-export function morphInto(old: Element, nu: Element) {
-    syncAttrs(old, nu); swapListeners(old, nu);
+export function morphInto(old: Element, nu: Element, keepOwnListeners = false) {
+    syncAttrs(old, nu); if (!keepOwnListeners) swapListeners(old, nu); // keepOwnListeners：只同步属性 + 子树，自身监听保留旧的（见 commitKeepingHover 的按钮分支）
     const oc = Array.from(old.childNodes), nc = Array.from(nu.childNodes);
     const byKey = new Map<string, Element>();
     for (const c of oc) if (c instanceof Element && rowKey(c)) byKey.set(rowKey(c)!, c);
@@ -61,6 +64,7 @@ export function morphInto(old: Element, nu: Element) {
         return n;
     });
     if (out.length !== oc.length || out.some((n, i) => n !== oc[i])) old.replaceChildren(...out);
+    if (old.classList.contains("arc-row") && old.matches(":hover")) old.dispatchEvent(new Event(REHOVER));
 }
 
 const INTERACTIVE = "[data-sel], [data-folder], .arc-row, .arc-folder-head, .arc-fav-tile, [draggable=true], button, a, [role=button], [role=menuitem]";
@@ -109,7 +113,10 @@ export function commitKeepingHover(root: Element, frag: Node[], hovered: Element
     // 非“行”的控件（按钮等）：闭包常捕获自身（setPointerCapture、classList…），换上新监听会指向游离新节点（52025：today-clear InvalidStateError）。
     // 这类保留旧节点 + 旧监听 + 旧子树，整体自洽，只是这一帧状态可能旧一点；下次指针离开后的重绘即换新
     const last = chain.at(-1)!;
-    if (!fresh && last.matches("button, [role=button]") && !last.matches(ROW) && !last.querySelector(ROW)) { /* 原样保留 */ }
+    /* rel42 hover-rerender：原先“原样保留”整块不动 → 悬停中的按钮状态 / 内容停在旧的（Space 圆点点了之后 active 不跟过来、地址栏换域名后文字和
+     * 复制链接按钮里的 URL 都是旧的，直到指针离开后的下一次重绘）。现在：自身监听仍保留旧的（闭包捕获自身，52025 不复发），
+     * 属性（class / data-* / aria）和子节点照新树同步（子按钮换新，其闭包捕获的就是进了文档的它自己）。 */
+    if (!fresh && last.matches("button, [role=button]") && !last.matches(ROW) && !last.querySelector(ROW)) morphInto(last, news.at(-1)!, true);
     else if (fresh) { const o = chain.at(-1)!, n = news.at(-1)!; syncAttrs(o, n); swapListeners(o, n); o.replaceChildren(...Array.from(n.childNodes)); } // 子树整体换新（不 morph：避免旧按钮配新闭包）
     else morphInto(chain.at(-1)!, news.at(-1)!);
     for (let i = chain.length - 2; i >= 0; i--) {

@@ -68,6 +68,11 @@ export interface PluginDef {
      * 功能上 required: true 表示必需功能——始终运行，不出现开关。
      */
     features?: PluginDef[];
+    /**
+     * 插件卡片底部的功能标签（i18n 键，每个至少一个，取自插件实际提供的功能）。给没有 features 的单功能 / 小插件用；
+     * 有 features 的插件卡片底部用 features 的名称（见 cardTags）。绝不回落成作者名。
+     */
+    featureTags?: string[];
     /** 由 PluginManager 回填：功能所属的插件 */
     parent?: string;
 }
@@ -108,6 +113,8 @@ export interface PluginSettingCommon {
     featureToggle?: boolean;
     /** featureSettings 填写：所属可选功能的开关键；设置页把本项缩进到开关下，开关关闭时隐藏 */
     parent?: string;
+    /** 详细说明（文本键）：设置行不显示，悬停设置行文字时用项目的 ArcTooltip 显示——第一行 = 提示标题，其余行合成副标题（单行省略，所以每行都要短）。行内的 description 只放一句话 */
+    detail?: string;
     placeholder?: string;
     /** 敏感值（API 密钥等）：设置页渲染为密码框；Data 插件的导出 / 备份跳过，导入时保留现有值 */
     sensitive?: boolean;
@@ -155,6 +162,9 @@ export interface PluginSettingSelectDef {
 
 export interface PluginSettingSelectOption {
     label: string;
+    /** 补丁 inpage-settings-copy-fix：可选的「按钮短标签」（i18n 键）。下拉按钮是单行省略号、控件列只有 160–200px，整句长文案会被截成 "Window: Chrome panel ..."；
+     *  给了 short 就让**按钮文字**用它，菜单项与悬停提示（data-tip）仍是完整 label。没给 = 与以前完全一致。 */
+    short?: string;
     value: string | number | boolean;
     default?: boolean;
 }

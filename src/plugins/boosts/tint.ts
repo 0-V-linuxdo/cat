@@ -3,10 +3,11 @@
 import type { TintPrim } from "./color";
 import { activeBoostsFor, colorActionFor, TINT_FILTER_ID, TINT_TAG } from "./model";
 import { boostStore } from "./store";
+import { PAGE_Z_MAX } from "@utils/zLayers";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const LAYER_STYLE: Record<string, string> = {
-    display: "block", position: "fixed", inset: "0", "pointer-events": "none", "z-index": "2147483647",
+    display: "block", position: "fixed", inset: "0", "pointer-events": "none", "z-index": String(PAGE_Z_MAX),
     contain: "strict", transform: "translateZ(0)", margin: "0", padding: "0", border: "0", background: "transparent",
 };
 

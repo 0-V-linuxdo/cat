@@ -13,6 +13,7 @@ test("drift slash 是 SVG 直线，无 tooltip", () => {
 test("drift slash 样式", () => {
     expect(css).toContain("rgb(0 0 0 / .30)");
     expect(css).toContain(":root[data-theme=\"dark\"] .arc-drift { color: rgb(255 255 255 / .30); }");
-    expect(css).toContain(".arc-tab:hover .arc-drift { opacity: 0; }");
+    expect(css).toContain('.arc-tab[data-hz="icon"] .arc-drift { opacity: 0; }');
+    expect(css).not.toContain(".arc-tab:hover .arc-drift"); // rel46：只在图标区隐藏
     expect(css).not.toMatch(/\.arc-drift \{[^}]*margin-right: -4px/);
 });

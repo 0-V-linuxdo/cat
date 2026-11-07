@@ -18,6 +18,8 @@ import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { archiveStore } from "@plugins/tabs/archive";
 import { pinnedStore, walk } from "@plugins/tabs/pinnedTabs/model";
+import { rebindReopened } from "@plugins/tabs/pinnedTabs/closedTab";
+import { favStore } from "@plugins/spaces/favorites/store";
 import { spacesStore } from "@plugins/spaces/spaceManager/store";
 import { type ClosedTab, popEntry, pushEntry, restoreOrder, tabsLabel } from "./logic";
 
@@ -55,8 +57,10 @@ async function reopenTabs(data: unknown, entry: UndoEntry) {
         if (nt?.id != null) map.set(t.oldId, nt.id);
     }
     await spacesStore.update(x => { for (const t of tabs) { const n = map.get(t.oldId); if (n != null && t.spaceId && x.spaces.some(s => s.id === t.spaceId)) x.tabSpace[n] = t.spaceId; } });
-    // 固定项保留着旧 tabId，重新关联到新标签
-    await pinnedStore.update(x => { for (const list of Object.values(x.bySpace)) for (const n of walk(list)) { const m = n.tabId != null ? map.get(n.tabId) : undefined; if (m != null) n.tabId = m; } });
+    // 固定项 / 收藏重新关联到新标签。补丁 rel63-fav-reattach：关标签时 tabId 已清、旧 id 记在 closedTabId（closedTab.ts）；还绑着旧 id 的照旧改；已绑了别的活标签的不动
+    await pinnedStore.update(x => { for (const list of Object.values(x.bySpace)) rebindReopened(walk(list), map); });
+    await favStore.ready;
+    if (favStore.get().items.some(f => (f.tabId ?? f.closedTabId) != null && map.has((f.tabId ?? f.closedTabId)!))) await favStore.update(x => { rebindReopened(x.items, map); });
     // 这些标签同时进了归档：撤销即从归档中移除
     const urls = new Set(tabs.map(t => t.url));
     await archiveStore.update(x => { x.items = x.items.filter(i => !(urls.has(i.url) && i.closedAt >= entry.at - 5000)); });

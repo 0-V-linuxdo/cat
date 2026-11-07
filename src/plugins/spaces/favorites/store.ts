@@ -3,6 +3,7 @@ import { createPluginStore } from "@api/Storage";
 
 export interface Fav {
     id: string; url: string; title: string; tabId?: number;
+    /** 补丁 rel63-fav-reattach：绑定的标签被关掉时记下的旧 id（tabId 同时清空），只给撤销重开重新关联用（pinnedTabs/closedTab.ts） */ closedTabId?: number;
     /** 自定义图标：emoji 或图片网址 */ icon?: string;
     /** 自定义名称（右键 Rename…，Arc renameFavorite(12)）；设了就优先于标签标题 / 收藏时的标题 */ customTitle?: string;
     /** 保存的 favicon（Arc SidebarTab.savedFavicon）：只由 Replace Pinned URL with Current 写入（新值非空才覆盖），Duplicate 复制；磁贴在没有自定义图标、也没有打开的标签的 favicon 时用它。⛔ 回退顺序未追到 */ favicon?: string;

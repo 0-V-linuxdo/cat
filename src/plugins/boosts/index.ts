@@ -15,6 +15,7 @@ import definePlugin, { OptionType } from "@utils/types";
 
 import "./i18n";
 import { applyAll, applyToTab, forgetTab, removeAll, syncUserScripts, userScriptsApi } from "./apply";
+import { followAppearance } from "./editorTheme";
 import { activeBoostsFor, hostOf } from "./model";
 import { startTint } from "./tint";
 import { boostStore, updateBoost } from "./store";
@@ -49,10 +50,10 @@ const openEditor = async (url?: string) => { const id = await createForActiveTab
 export default definePlugin({
     name: "Boosts",
     label: "plugin.boosts.label",
-    icon: "boost",
     description: "plugin.boosts.desc",
     authors: [Devs.ArcSidebar],
     tags: ["views"],
+    featureTags: ["boosts.tag.colors", "boosts.tag.fonts", "boosts.tag.zap", "boosts.tag.css", "boosts.tag.js"],
     settings,
     /** 自定义 JS 开关按需申请 userScripts（manifest optional_permissions） */
     optionalPermissions: { jsEnabled: ["userScripts"] },
@@ -103,8 +104,10 @@ export default definePlugin({
     page: {
         async start() {
             if (!location.pathname.endsWith("/boost-editor.html")) return;
+            const stopAppearance = followAppearance(); // [system-color-scheme/7] 跟随外观设置 plugins.Spaces.mode（auto 跟系统）
             await boostStore.ready;
-            return mountEditorPage(location.pathname, location.search, { ...viewOpts, openEditor: undefined });
+            const unmount = mountEditorPage(location.pathname, location.search, { ...viewOpts, openEditor: undefined });
+            return () => { stopAppearance(); if (typeof unmount === "function") unmount(); };
         },
     },
     content: {
